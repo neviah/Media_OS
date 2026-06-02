@@ -18,6 +18,7 @@ const Home = () => {
   const [llmStatus, setLlmStatus] = React.useState(null);
   const [apiReady, setApiReady] = React.useState(true);
   const [busyStep, setBusyStep] = React.useState('');
+  const [setupBusy, setSetupBusy] = React.useState(false);
 
   const [authForm, setAuthForm] = React.useState({
     apiKey: window.localStorage.getItem('mediaos_api_key') || '',
@@ -34,6 +35,19 @@ const Home = () => {
     music_id: '',
     platform: 'youtube',
     b_roll_prompts: ''
+  });
+
+  const [setupForm, setSetupForm] = React.useState({
+    existing_workspace_id: '',
+    workspace_name: 'Starter Workspace',
+    workspace_description: 'Created from guided setup',
+    avatar_name: 'Main Host',
+    avatar_style_hints: 'clean, friendly, newsroom',
+    channel_name: 'Main Channel',
+    script_style_preset: 'informative',
+    news_source_name: 'Tech RSS',
+    news_source_url: 'https://feeds.bbci.co.uk/news/technology/rss.xml',
+    news_keywords: 'ai,technology'
   });
 
   const parseOptionalId = (value) => {
@@ -94,7 +108,7 @@ const Home = () => {
     publish: Boolean(pipelineForm.video_id && pipelineForm.platform)
   }), [pipelineForm]);
 
-  React.useEffect(() => {
+  const loadDashboardState = React.useCallback(async () => {
     const endpointMap = {
       workspaces: '/api/workspaces/',
       channels: '/api/channels/',
@@ -102,47 +116,52 @@ const Home = () => {
       videos: '/api/videos/'
     };
 
-    const loadDashboardState = async () => {
-      try {
-        const [entries, workspaces, channels, sources, scripts, audios, videos, music, llm] = await Promise.all([
-          Promise.all(Object.entries(endpointMap).map(async ([key, path]) => {
-            const data = await apiGet(path);
-            return [key, Array.isArray(data) ? data.length : 0];
-          })),
-          apiGet('/api/workspaces/'),
-          apiGet('/api/channels/'),
-          apiGet('/api/news-sources/'),
-          apiGet('/api/scripts/'),
-          apiGet('/api/audios/'),
-          apiGet('/api/videos/'),
-          apiGet('/api/music/'),
-          apiGet('/api/system/llm-status')
-        ]);
+    try {
+      const [entries, workspaces, channels, sources, scripts, audios, videos, music, llm] = await Promise.all([
+        Promise.all(Object.entries(endpointMap).map(async ([key, path]) => {
+          const data = await apiGet(path);
+          return [key, Array.isArray(data) ? data.length : 0];
+        })),
+        apiGet('/api/workspaces/'),
+        apiGet('/api/channels/'),
+        apiGet('/api/news-sources/'),
+        apiGet('/api/scripts/'),
+        apiGet('/api/audios/'),
+        apiGet('/api/videos/'),
+        apiGet('/api/music/'),
+        apiGet('/api/system/llm-status')
+      ]);
 
-        setStats(Object.fromEntries(entries));
-        setEntities({ workspaces, channels, sources, scripts, audios, videos, music });
-        setLlmStatus(llm);
-        setApiReady(true);
+      setStats(Object.fromEntries(entries));
+      setEntities({ workspaces, channels, sources, scripts, audios, videos, music });
+      setLlmStatus(llm);
+      setApiReady(true);
 
-        setPipelineForm((previous) => ({
-          ...previous,
-          workspace_id: previous.workspace_id || (workspaces[0] ? String(workspaces[0].id) : ''),
-          channel_id: previous.channel_id || (channels[0] ? String(channels[0].id) : ''),
-          news_source_id: previous.news_source_id || (sources[0] ? String(sources[0].id) : ''),
-          script_id: previous.script_id || (scripts[0] ? String(scripts[0].id) : ''),
-          audio_id: previous.audio_id || (audios[0] ? String(audios[0].id) : ''),
-          video_id: previous.video_id || (videos[0] ? String(videos[0].id) : ''),
-          music_id: previous.music_id || (music[0] ? String(music[0].id) : '')
-        }));
-      } catch {
-        setApiReady(false);
-      }
-    };
+      setPipelineForm((previous) => ({
+        ...previous,
+        workspace_id: previous.workspace_id || (workspaces[0] ? String(workspaces[0].id) : ''),
+        channel_id: previous.channel_id || (channels[0] ? String(channels[0].id) : ''),
+        news_source_id: previous.news_source_id || (sources[0] ? String(sources[0].id) : ''),
+        script_id: previous.script_id || (scripts[0] ? String(scripts[0].id) : ''),
+        audio_id: previous.audio_id || (audios[0] ? String(audios[0].id) : ''),
+        video_id: previous.video_id || (videos[0] ? String(videos[0].id) : ''),
+        music_id: previous.music_id || (music[0] ? String(music[0].id) : '')
+      }));
 
+      setSetupForm((previous) => ({
+        ...previous,
+        existing_workspace_id: previous.existing_workspace_id || (workspaces[0] ? String(workspaces[0].id) : '')
+      }));
+    } catch {
+      setApiReady(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
     loadDashboardState();
     const intervalId = window.setInterval(loadDashboardState, 20000);
     return () => window.clearInterval(intervalId);
-  }, []);
+  }, [loadDashboardState]);
 
   React.useEffect(() => {
     setPipelineForm((previous) => {
@@ -255,6 +274,86 @@ const Home = () => {
     info('API auth settings cleared.');
   };
 
+  const runGuidedSetup = async () => {
+    const workspaceName = setupForm.workspace_name.trim();
+    const avatarName = setupForm.avatar_name.trim();
+    const channelName = setupForm.channel_name.trim();
+    const sourceName = setupForm.news_source_name.trim();
+    const sourceUrl = setupForm.news_source_url.trim();
+
+    if (!setupForm.existing_workspace_id && !workspaceName) {
+      showError('Workspace name is required when not using an existing workspace.');
+      return;
+    }
+    if (!avatarName || !channelName || !sourceName || !sourceUrl) {
+      showError('Avatar name, channel name, source name, and source URL are required.');
+      return;
+    }
+
+    setSetupBusy(true);
+    try {
+      let workspaceId = Number(setupForm.existing_workspace_id);
+      if (!workspaceId) {
+        const workspace = await apiPost('/api/workspaces/', {
+          name: workspaceName,
+          description: setupForm.workspace_description.trim() || null
+        });
+        workspaceId = workspace.id;
+      }
+
+      const avatar = await apiPost('/api/avatars/', {
+        workspace_id: workspaceId,
+        name: avatarName,
+        style_hints: setupForm.avatar_style_hints.trim() || null,
+        channel_type: 'news',
+        base_portrait_path: null,
+        reference_sheet_path: null,
+        voice_profile_id: null
+      });
+
+      const channel = await apiPost('/api/channels/', {
+        workspace_id: workspaceId,
+        avatar_id: avatar.id,
+        name: channelName,
+        script_style_preset: setupForm.script_style_preset,
+        music_policy: 'approved_only',
+        social_platform_credentials: null,
+        posting_schedule: null,
+        branding_colors: null,
+        intro_outro_paths: null,
+        is_active: true
+      });
+
+      const source = await apiPost('/api/news-sources/', {
+        workspace_id: workspaceId,
+        name: sourceName,
+        source_url: sourceUrl,
+        keywords: setupForm.news_keywords.trim() || null,
+        pull_interval: 60,
+        is_active: true
+      });
+
+      await loadDashboardState();
+
+      setPipelineForm((previous) => ({
+        ...previous,
+        workspace_id: String(workspaceId),
+        channel_id: String(channel.id),
+        news_source_id: String(source.id)
+      }));
+      setSetupForm((previous) => ({
+        ...previous,
+        existing_workspace_id: String(workspaceId)
+      }));
+
+      success(`Guided setup complete: workspace #${workspaceId}, avatar #${avatar.id}, channel #${channel.id}, source #${source.id}.`);
+    } catch {
+      showError('Guided setup failed. Check form values and auth role, then retry.');
+    } finally {
+      setSetupBusy(false);
+    }
+  };
+
   return (
     <div className="dashboard-root">
       <section className="hero-card reveal-up">
@@ -298,6 +397,121 @@ const Home = () => {
           <a href="/channels">{stats.channels > 0 ? 'Done' : 'Missing'}: Create a channel linked to that avatar</a>
           <a href="/news-sources">Open: Add at least one RSS or Reddit news source</a>
           <a href="/scripts">Optional: Review generated scripts before voice</a>
+        </div>
+      </section>
+
+      <section className="feature-card reveal-up delay-2">
+        <h3>Guided Setup Wizard</h3>
+        <p style={{ marginTop: '0.4rem' }}>Creates Workspace -> Avatar -> Channel -> News Source in one pass.</p>
+
+        <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+          <label>
+            Existing Workspace (optional)
+            <select
+              className="form-input"
+              value={setupForm.existing_workspace_id}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, existing_workspace_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Create new workspace</option>
+              {entities.workspaces.map((item) => <option key={item.id} value={item.id}>{item.name} (#{item.id})</option>)}
+            </select>
+          </label>
+          <label>
+            Workspace Name
+            <input
+              className="form-input"
+              value={setupForm.workspace_name}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, workspace_name: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+              disabled={Boolean(setupForm.existing_workspace_id)}
+            />
+          </label>
+          <label>
+            Workspace Description
+            <input
+              className="form-input"
+              value={setupForm.workspace_description}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, workspace_description: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+              disabled={Boolean(setupForm.existing_workspace_id)}
+            />
+          </label>
+          <label>
+            Avatar Name
+            <input
+              className="form-input"
+              value={setupForm.avatar_name}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, avatar_name: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            Avatar Style Hints
+            <input
+              className="form-input"
+              value={setupForm.avatar_style_hints}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, avatar_style_hints: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            Channel Name
+            <input
+              className="form-input"
+              value={setupForm.channel_name}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, channel_name: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            Script Style
+            <select
+              className="form-input"
+              value={setupForm.script_style_preset}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, script_style_preset: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="informative">informative</option>
+              <option value="energetic">energetic</option>
+              <option value="professional">professional</option>
+            </select>
+          </label>
+          <label>
+            News Source Name
+            <input
+              className="form-input"
+              value={setupForm.news_source_name}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, news_source_name: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            News Source URL
+            <input
+              className="form-input"
+              value={setupForm.news_source_url}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, news_source_url: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            News Keywords
+            <input
+              className="form-input"
+              value={setupForm.news_keywords}
+              onChange={(event) => setSetupForm((previous) => ({ ...previous, news_keywords: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+        </div>
+
+        <div className="table-toolbar" style={{ marginTop: '0.9rem' }}>
+          <div className="toolbar-group">
+            <button className="tiny-button" type="button" disabled={setupBusy} onClick={runGuidedSetup}>
+              {setupBusy ? 'Running Setup...' : 'Run Guided Setup'}
+            </button>
+          </div>
         </div>
       </section>
 

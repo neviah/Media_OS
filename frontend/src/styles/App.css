@@ -448,6 +448,93 @@ body {
   padding: 0.5rem 0.55rem;
 }
 
+.field-error {
+  color: #b54747;
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.7rem;
+}
+
+.toolbar-group {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tiny-button {
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tiny-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+}
+
+.toast-viewport {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 20;
+  display: grid;
+  gap: 0.5rem;
+  width: min(380px, calc(100vw - 2rem));
+}
+
+.toast-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  color: var(--ink);
+  padding: 0.65rem 0.75rem;
+  box-shadow: var(--shadow);
+}
+
+.toast-item button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+  font-size: 0.72rem;
+}
+
+.toast-success {
+  border-color: rgba(43, 122, 85, 0.45);
+}
+
+.toast-error {
+  border-color: rgba(181, 71, 71, 0.45);
+}
+
 .divide-y.divide-gray-200 {
   border-color: var(--border);
 }

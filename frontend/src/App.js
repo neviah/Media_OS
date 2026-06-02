@@ -13,6 +13,8 @@ import Audios from './pages/Audios';
 import Videos from './pages/Videos';
 import PublishLogs from './pages/PublishLogs';
 import Metrics from './pages/Metrics';
+import ToastViewport from './components/ToastViewport';
+import { ToastProvider } from './context/ToastContext';
 import './styles/App.css';
 
 const ROUTE_TITLES = {
@@ -92,9 +94,12 @@ function AppFrame() {
 
 function App() {
   return (
-    <Router>
-      <AppFrame />
-    </Router>
+    <ToastProvider>
+      <Router>
+        <AppFrame />
+      </Router>
+      <ToastViewport />
+    </ToastProvider>
   );
 }
 

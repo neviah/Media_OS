@@ -4,13 +4,26 @@ import { useToast } from '../context/ToastContext';
 
 const Home = () => {
   const { success, error: showError, info } = useToast();
+
   const [stats, setStats] = React.useState({ workspaces: 0, channels: 0, avatars: 0, videos: 0 });
+  const [entities, setEntities] = React.useState({
+    workspaces: [],
+    channels: [],
+    sources: [],
+    scripts: [],
+    audios: [],
+    videos: [],
+    music: []
+  });
+  const [llmStatus, setLlmStatus] = React.useState(null);
   const [apiReady, setApiReady] = React.useState(true);
   const [busyStep, setBusyStep] = React.useState('');
+
   const [authForm, setAuthForm] = React.useState({
     apiKey: window.localStorage.getItem('mediaos_api_key') || '',
     role: window.localStorage.getItem('mediaos_role') || 'admin'
   });
+
   const [pipelineForm, setPipelineForm] = React.useState({
     workspace_id: '',
     channel_id: '',
@@ -23,15 +36,6 @@ const Home = () => {
     b_roll_prompts: ''
   });
 
-  const parseRequiredId = (label, value) => {
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      showError(`${label} must be a valid positive ID.`);
-      return null;
-    }
-    return parsed;
-  };
-
   const parseOptionalId = (value) => {
     if (!value) {
       return null;
@@ -40,88 +44,85 @@ const Home = () => {
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   };
 
-  const runNewsToScript = () => {
-    const workspaceId = parseRequiredId('Workspace ID', pipelineForm.workspace_id);
-    const channelId = parseRequiredId('Channel ID', pipelineForm.channel_id);
-    const newsSourceId = parseOptionalId(pipelineForm.news_source_id);
-    if (!workspaceId || !channelId) {
-      return;
+  const channelOptions = React.useMemo(() => {
+    if (!pipelineForm.workspace_id) {
+      return entities.channels;
     }
-    runPipelineStep('News to Script', '/api/pipelines/news-to-script', {
-      workspace_id: workspaceId,
-      channel_id: channelId,
-      news_source_id: newsSourceId
-    });
-  };
+    return entities.channels.filter((item) => String(item.workspace_id) === pipelineForm.workspace_id);
+  }, [entities.channels, pipelineForm.workspace_id]);
 
-  const runScriptToVoice = () => {
-    const scriptId = parseRequiredId('Script ID', pipelineForm.script_id);
-    if (!scriptId) {
-      return;
+  const sourceOptions = React.useMemo(() => {
+    if (!pipelineForm.workspace_id) {
+      return entities.sources;
     }
-    runPipelineStep('Script to Voice', '/api/pipelines/script-to-voice', { script_id: scriptId });
-  };
+    return entities.sources.filter((item) => String(item.workspace_id) === pipelineForm.workspace_id);
+  }, [entities.sources, pipelineForm.workspace_id]);
 
-  const runVoiceToAvatar = () => {
-    const audioId = parseRequiredId('Audio ID', pipelineForm.audio_id);
-    if (!audioId) {
-      return;
+  const scriptOptions = React.useMemo(() => {
+    if (!pipelineForm.workspace_id) {
+      return entities.scripts;
     }
-    runPipelineStep('Voice to Avatar Video', '/api/pipelines/voice-to-avatar-video', { audio_id: audioId });
-  };
+    return entities.scripts.filter((item) => String(item.workspace_id) === pipelineForm.workspace_id);
+  }, [entities.scripts, pipelineForm.workspace_id]);
 
-  const runAssembly = () => {
-    const videoId = parseRequiredId('Video ID', pipelineForm.video_id);
-    if (!videoId) {
-      return;
+  const audioOptions = React.useMemo(() => {
+    if (!pipelineForm.workspace_id) {
+      return entities.audios;
     }
-    runPipelineStep('Video Assembly', '/api/pipelines/video-assembly', {
-      video_id: videoId,
-      music_id: parseOptionalId(pipelineForm.music_id),
-      b_roll_prompts: pipelineForm.b_roll_prompts
-        ? pipelineForm.b_roll_prompts.split(',').map((item) => item.trim()).filter(Boolean)
-        : []
-    });
-  };
+    return entities.audios.filter((item) => String(item.workspace_id) === pipelineForm.workspace_id);
+  }, [entities.audios, pipelineForm.workspace_id]);
 
-  const runPublish = () => {
-    const videoId = parseRequiredId('Video ID', pipelineForm.video_id);
-    if (!videoId) {
-      return;
+  const videoOptions = React.useMemo(() => {
+    if (!pipelineForm.workspace_id) {
+      return entities.videos;
     }
-    runPipelineStep('Publish', '/api/pipelines/publish', {
-      video_id: videoId,
-      platform: pipelineForm.platform
-    });
-  };
+    return entities.videos.filter((item) => String(item.workspace_id) === pipelineForm.workspace_id);
+  }, [entities.videos, pipelineForm.workspace_id]);
+
+  const musicOptions = React.useMemo(() => {
+    if (!pipelineForm.workspace_id) {
+      return entities.music;
+    }
+    return entities.music.filter((item) => String(item.workspace_id) === pipelineForm.workspace_id);
+  }, [entities.music, pipelineForm.workspace_id]);
+
+  const pipelineReady = React.useMemo(() => ({
+    newsToScript: Boolean(pipelineForm.workspace_id && pipelineForm.channel_id),
+    scriptToVoice: Boolean(pipelineForm.script_id),
+    voiceToAvatar: Boolean(pipelineForm.audio_id),
+    assembly: Boolean(pipelineForm.video_id),
+    publish: Boolean(pipelineForm.video_id && pipelineForm.platform)
+  }), [pipelineForm]);
 
   React.useEffect(() => {
-    const endpointMap = { workspaces: '/api/workspaces/', channels: '/api/channels/', avatars: '/api/avatars/', videos: '/api/videos/' };
-
-    const loadStats = async () => {
-      try {
-        const entries = await Promise.all(Object.entries(endpointMap).map(async ([key, path]) => {
-          const data = await apiGet(path);
-          return [key, Array.isArray(data) ? data.length : 0];
-        }));
-        setStats(Object.fromEntries(entries));
-        setApiReady(true);
-      } catch {
-        setApiReady(false);
-      }
+    const endpointMap = {
+      workspaces: '/api/workspaces/',
+      channels: '/api/channels/',
+      avatars: '/api/avatars/',
+      videos: '/api/videos/'
     };
 
-    const hydratePipelineDefaults = async () => {
+    const loadDashboardState = async () => {
       try {
-        const [workspaces, channels, sources, scripts, audios, videos, music] = await Promise.all([
+        const [entries, workspaces, channels, sources, scripts, audios, videos, music, llm] = await Promise.all([
+          Promise.all(Object.entries(endpointMap).map(async ([key, path]) => {
+            const data = await apiGet(path);
+            return [key, Array.isArray(data) ? data.length : 0];
+          })),
           apiGet('/api/workspaces/'),
           apiGet('/api/channels/'),
           apiGet('/api/news-sources/'),
           apiGet('/api/scripts/'),
           apiGet('/api/audios/'),
           apiGet('/api/videos/'),
-          apiGet('/api/music/')
+          apiGet('/api/music/'),
+          apiGet('/api/system/llm-status')
         ]);
+
+        setStats(Object.fromEntries(entries));
+        setEntities({ workspaces, channels, sources, scripts, audios, videos, music });
+        setLlmStatus(llm);
+        setApiReady(true);
 
         setPipelineForm((previous) => ({
           ...previous,
@@ -134,15 +135,39 @@ const Home = () => {
           music_id: previous.music_id || (music[0] ? String(music[0].id) : '')
         }));
       } catch {
-        info('Pipeline defaults could not be auto-loaded yet.');
+        setApiReady(false);
       }
     };
 
-    loadStats();
-    hydratePipelineDefaults();
-    const intervalId = window.setInterval(loadStats, 20000);
+    loadDashboardState();
+    const intervalId = window.setInterval(loadDashboardState, 20000);
     return () => window.clearInterval(intervalId);
-  }, [info]);
+  }, []);
+
+  React.useEffect(() => {
+    setPipelineForm((previous) => {
+      const next = { ...previous };
+      if (next.channel_id && !channelOptions.some((item) => String(item.id) === next.channel_id)) {
+        next.channel_id = '';
+      }
+      if (next.news_source_id && !sourceOptions.some((item) => String(item.id) === next.news_source_id)) {
+        next.news_source_id = '';
+      }
+      if (next.script_id && !scriptOptions.some((item) => String(item.id) === next.script_id)) {
+        next.script_id = '';
+      }
+      if (next.audio_id && !audioOptions.some((item) => String(item.id) === next.audio_id)) {
+        next.audio_id = '';
+      }
+      if (next.video_id && !videoOptions.some((item) => String(item.id) === next.video_id)) {
+        next.video_id = '';
+      }
+      if (next.music_id && !musicOptions.some((item) => String(item.id) === next.music_id)) {
+        next.music_id = '';
+      }
+      return next;
+    });
+  }, [channelOptions, sourceOptions, scriptOptions, audioOptions, videoOptions, musicOptions]);
 
   const runPipelineStep = async (label, path, payload) => {
     setBusyStep(label);
@@ -158,6 +183,63 @@ const Home = () => {
     } finally {
       setBusyStep('');
     }
+  };
+
+  const runNewsToScript = () => {
+    if (!pipelineReady.newsToScript) {
+      showError('Select workspace and channel before running News to Script.');
+      return;
+    }
+    runPipelineStep('News to Script', '/api/pipelines/news-to-script', {
+      workspace_id: Number(pipelineForm.workspace_id),
+      channel_id: Number(pipelineForm.channel_id),
+      news_source_id: parseOptionalId(pipelineForm.news_source_id)
+    });
+  };
+
+  const runScriptToVoice = () => {
+    if (!pipelineReady.scriptToVoice) {
+      showError('Select a script before running Script to Voice.');
+      return;
+    }
+    runPipelineStep('Script to Voice', '/api/pipelines/script-to-voice', {
+      script_id: Number(pipelineForm.script_id)
+    });
+  };
+
+  const runVoiceToAvatar = () => {
+    if (!pipelineReady.voiceToAvatar) {
+      showError('Select an audio record before running Voice to Avatar.');
+      return;
+    }
+    runPipelineStep('Voice to Avatar Video', '/api/pipelines/voice-to-avatar-video', {
+      audio_id: Number(pipelineForm.audio_id)
+    });
+  };
+
+  const runAssembly = () => {
+    if (!pipelineReady.assembly) {
+      showError('Select a video before running Video Assembly.');
+      return;
+    }
+    runPipelineStep('Video Assembly', '/api/pipelines/video-assembly', {
+      video_id: Number(pipelineForm.video_id),
+      music_id: parseOptionalId(pipelineForm.music_id),
+      b_roll_prompts: pipelineForm.b_roll_prompts
+        ? pipelineForm.b_roll_prompts.split(',').map((item) => item.trim()).filter(Boolean)
+        : []
+    });
+  };
+
+  const runPublish = () => {
+    if (!pipelineReady.publish) {
+      showError('Select a video and platform before running Publish.');
+      return;
+    }
+    runPipelineStep('Publish', '/api/pipelines/publish', {
+      video_id: Number(pipelineForm.video_id),
+      platform: pipelineForm.platform
+    });
   };
 
   const saveAuthSettings = () => {
@@ -260,28 +342,136 @@ const Home = () => {
       </section>
 
       <section className="feature-card reveal-up delay-2">
+        <h3>LLM Runtime Status</h3>
+        {llmStatus ? (
+          <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+            <div>
+              OpenRouter: {llmStatus.openrouter.authenticated ? 'Connected' : 'Not ready'}
+              {llmStatus.openrouter.error ? ` (${llmStatus.openrouter.error})` : ''}
+            </div>
+            <div>
+              Local provider: {llmStatus.local.reachable ? `Connected (${llmStatus.local.provider || 'detected'})` : 'Not ready'}
+              {llmStatus.local.error ? ` (${llmStatus.local.error})` : ''}
+            </div>
+            <div>Local model: {llmStatus.local.model || 'local-model'}</div>
+            <div>Override model: {llmStatus.override_model || 'none'}</div>
+          </div>
+        ) : (
+          <p style={{ marginTop: '0.5rem' }}>Loading LLM status...</p>
+        )}
+      </section>
+
+      <section className="feature-card reveal-up delay-2">
         <h3>Run Pipeline Actions</h3>
-        <p style={{ marginTop: '0.4rem' }}>Trigger backend pipeline jobs directly for fast smoke-testing.</p>
+        <p style={{ marginTop: '0.4rem' }}>Select existing records, then trigger each stage. Buttons stay disabled until required inputs exist.</p>
 
         <div className="stage-list" style={{ marginTop: '0.8rem' }}>
-          <label>Workspace ID<input className="form-input" value={pipelineForm.workspace_id} onChange={(event) => setPipelineForm((previous) => ({ ...previous, workspace_id: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
-          <label>Channel ID<input className="form-input" value={pipelineForm.channel_id} onChange={(event) => setPipelineForm((previous) => ({ ...previous, channel_id: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
-          <label>News Source ID<input className="form-input" value={pipelineForm.news_source_id} onChange={(event) => setPipelineForm((previous) => ({ ...previous, news_source_id: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
-          <label>Script ID<input className="form-input" value={pipelineForm.script_id} onChange={(event) => setPipelineForm((previous) => ({ ...previous, script_id: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
-          <label>Audio ID<input className="form-input" value={pipelineForm.audio_id} onChange={(event) => setPipelineForm((previous) => ({ ...previous, audio_id: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
-          <label>Video ID<input className="form-input" value={pipelineForm.video_id} onChange={(event) => setPipelineForm((previous) => ({ ...previous, video_id: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
-          <label>Music ID<input className="form-input" value={pipelineForm.music_id} onChange={(event) => setPipelineForm((previous) => ({ ...previous, music_id: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
-          <label>Platform<select className="form-input" value={pipelineForm.platform} onChange={(event) => setPipelineForm((previous) => ({ ...previous, platform: event.target.value }))} style={{ marginTop: '0.35rem' }}><option value="youtube">youtube</option><option value="tiktok">tiktok</option><option value="instagram">instagram</option><option value="x">x</option></select></label>
-          <label>B-roll Prompts<input className="form-input" value={pipelineForm.b_roll_prompts} onChange={(event) => setPipelineForm((previous) => ({ ...previous, b_roll_prompts: event.target.value }))} style={{ marginTop: '0.35rem' }} /></label>
+          <label>
+            Workspace
+            <select
+              className="form-input"
+              value={pipelineForm.workspace_id}
+              onChange={(event) => setPipelineForm((previous) => ({ ...previous, workspace_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Select workspace</option>
+              {entities.workspaces.map((item) => <option key={item.id} value={item.id}>{item.name} (#{item.id})</option>)}
+            </select>
+          </label>
+          <label>
+            Channel
+            <select
+              className="form-input"
+              value={pipelineForm.channel_id}
+              onChange={(event) => setPipelineForm((previous) => ({ ...previous, channel_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Select channel</option>
+              {channelOptions.map((item) => <option key={item.id} value={item.id}>{item.name} (#{item.id})</option>)}
+            </select>
+          </label>
+          <label>
+            News Source
+            <select
+              className="form-input"
+              value={pipelineForm.news_source_id}
+              onChange={(event) => setPipelineForm((previous) => ({ ...previous, news_source_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Auto-select by workspace</option>
+              {sourceOptions.map((item) => <option key={item.id} value={item.id}>{item.name} (#{item.id})</option>)}
+            </select>
+          </label>
+          <label>
+            Script
+            <select
+              className="form-input"
+              value={pipelineForm.script_id}
+              onChange={(event) => setPipelineForm((previous) => ({ ...previous, script_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Select script</option>
+              {scriptOptions.map((item) => <option key={item.id} value={item.id}>{item.title || `Script #${item.id}`}</option>)}
+            </select>
+          </label>
+          <label>
+            Audio
+            <select
+              className="form-input"
+              value={pipelineForm.audio_id}
+              onChange={(event) => setPipelineForm((previous) => ({ ...previous, audio_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Select audio</option>
+              {audioOptions.map((item) => <option key={item.id} value={item.id}>Audio #{item.id} (script #{item.script_id})</option>)}
+            </select>
+          </label>
+          <label>
+            Video
+            <select
+              className="form-input"
+              value={pipelineForm.video_id}
+              onChange={(event) => setPipelineForm((previous) => ({ ...previous, video_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Select video</option>
+              {videoOptions.map((item) => <option key={item.id} value={item.id}>Video #{item.id} (audio #{item.audio_id})</option>)}
+            </select>
+          </label>
+          <label>
+            Music
+            <select
+              className="form-input"
+              value={pipelineForm.music_id}
+              onChange={(event) => setPipelineForm((previous) => ({ ...previous, music_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">None</option>
+              {musicOptions.map((item) => <option key={item.id} value={item.id}>{item.title || `Music #${item.id}`}</option>)}
+            </select>
+          </label>
+          <label>
+            Platform
+            <select className="form-input" value={pipelineForm.platform} onChange={(event) => setPipelineForm((previous) => ({ ...previous, platform: event.target.value }))} style={{ marginTop: '0.35rem' }}>
+              <option value="youtube">youtube</option>
+              <option value="tiktok">tiktok</option>
+              <option value="instagram">instagram</option>
+              <option value="x">x</option>
+            </select>
+          </label>
+          <label>
+            B-roll Prompts
+            <input className="form-input" value={pipelineForm.b_roll_prompts} onChange={(event) => setPipelineForm((previous) => ({ ...previous, b_roll_prompts: event.target.value }))} style={{ marginTop: '0.35rem' }} />
+          </label>
         </div>
 
         <div className="table-toolbar" style={{ marginTop: '0.9rem' }}>
           <div className="toolbar-group">
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runNewsToScript}>Run News -> Script</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runScriptToVoice}>Run Script -> Voice</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runVoiceToAvatar}>Run Voice -> Avatar</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runAssembly}>Run Assembly</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runPublish}>Run Publish</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.newsToScript} onClick={runNewsToScript}>Run News -&gt; Script</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.scriptToVoice} onClick={runScriptToVoice}>Run Script -&gt; Voice</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.voiceToAvatar} onClick={runVoiceToAvatar}>Run Voice -&gt; Avatar</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.assembly} onClick={runAssembly}>Run Assembly</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.publish} onClick={runPublish}>Run Publish</button>
           </div>
         </div>
 

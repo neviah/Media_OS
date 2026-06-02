@@ -180,6 +180,72 @@ class LLMService:
         provider, model_id = route.split(":", 1)
         return provider, model_id
 
+    def get_runtime_status(self) -> dict:
+        """
+        Return a diagnostics payload for current LLM runtime availability.
+
+        This is safe for UI polling and avoids exposing secrets.
+        """
+        import httpx
+
+        status = {
+            "override_model": self.override or None,
+            "routing": TASK_MODEL_MAP,
+            "openrouter": {
+                "configured": bool(self.openrouter_api_key),
+                "base_url": self.openrouter_base,
+                "authenticated": False,
+                "error": None,
+            },
+            "local": {
+                "configured_base": os.getenv("LOCAL_LLM_BASE") or None,
+                "detected_base": None,
+                "provider": None,
+                "reachable": False,
+                "model": self.local_model,
+                "error": None,
+            },
+        }
+
+        if self.openrouter_api_key:
+            try:
+                response = httpx.get(
+                    f"{self.openrouter_base}/models",
+                    headers={"Authorization": f"Bearer {self.openrouter_api_key}"},
+                    timeout=3.5,
+                )
+                if response.status_code == 200:
+                    status["openrouter"]["authenticated"] = True
+                else:
+                    status["openrouter"]["error"] = f"HTTP {response.status_code}"
+            except Exception as exc:
+                status["openrouter"]["error"] = str(exc)
+        else:
+            status["openrouter"]["error"] = "OPENROUTER_API_KEY not set"
+
+        local_base = self._local_base_url()
+        status["local"]["detected_base"] = local_base
+        if local_base:
+            if "1234" in local_base:
+                status["local"]["provider"] = "lmstudio"
+            elif "11434" in local_base:
+                status["local"]["provider"] = "ollama"
+            else:
+                status["local"]["provider"] = "custom"
+
+            try:
+                response = httpx.get(f"{local_base}/models", timeout=2.5)
+                if response.status_code < 500:
+                    status["local"]["reachable"] = True
+                else:
+                    status["local"]["error"] = f"HTTP {response.status_code}"
+            except Exception as exc:
+                status["local"]["error"] = str(exc)
+        else:
+            status["local"]["error"] = "No local provider detected"
+
+        return status
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def generate_text(

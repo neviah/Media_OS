@@ -9,8 +9,9 @@ from typing import Optional, Dict, Any
 import json
 import time
 
-from backend.models.database import Video, PublishLog
+from backend.models.database import Video, PublishLog, Channel, Workspace
 from backend.services.publishing_service import publishing_service
+from backend.services.llm_service import llm_service
 from backend.database import SessionLocal
 from backend import models
 
@@ -147,7 +148,7 @@ class PublishingPipeline:
         finally:
             self.db.close()
     
-    def _generate_publish_metadata(self, video: Video, channel: Channel, 
+    def _generate_publish_metadata(self, video: Video, channel: Channel,
                                  workspace: Optional[Workspace]) -> Dict[str, Any]:
         """
         Generate publishing metadata (title, description, hashtags) using LLM

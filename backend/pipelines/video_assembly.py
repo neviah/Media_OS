@@ -8,9 +8,10 @@ import logging
 from typing import Optional, List
 import json
 
-from backend.models.database import Video, Audio, Music
+from backend.models.database import Video, Audio, Music, Script
 from backend.services.video_assembly_service import video_assembly_service
 from backend.services.music_service import music_service
+from backend.services.flux_service import flux_service
 from backend.database import SessionLocal
 from backend import models
 

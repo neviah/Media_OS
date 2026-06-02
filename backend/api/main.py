@@ -1,6 +1,6 @@
 # backend/api/main.py
 from fastapi import APIRouter
-from .routers import workspaces, avatars, channels, music, news_sources, scripts, audios, videos, publish_logs, metrics
+from .routers import workspaces, avatars, channels, music, news_sources, scripts, audios, videos, publish_logs, metrics, pipelines
 
 api_router = APIRouter()
 
@@ -15,6 +15,7 @@ api_router.include_router(audios.router, prefix="/audios", tags=["audios"])
 api_router.include_router(videos.router, prefix="/videos", tags=["videos"])
 api_router.include_router(publish_logs.router, prefix="/publish-logs", tags=["publish-logs"])
 api_router.include_router(metrics.router, prefix="/metrics", tags=["metrics"])
+api_router.include_router(pipelines.router, prefix="/pipelines", tags=["pipelines"])
 
 # Health check endpoint
 @api_router.get("/health")

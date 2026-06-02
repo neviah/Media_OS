@@ -4,6 +4,7 @@ import { NavLink } from 'react-router-dom';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', prefix: 'DB' },
+  { to: '/workspaces', label: 'Workspaces', prefix: 'WS' },
   { to: '/avatars', label: 'Avatars', prefix: 'AV' },
   { to: '/channels', label: 'Channels', prefix: 'CH' },
   { to: '/music', label: 'Music Library', prefix: 'MU' },

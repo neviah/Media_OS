@@ -23,6 +23,78 @@ const Home = () => {
     b_roll_prompts: ''
   });
 
+  const parseRequiredId = (label, value) => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      showError(`${label} must be a valid positive ID.`);
+      return null;
+    }
+    return parsed;
+  };
+
+  const parseOptionalId = (value) => {
+    if (!value) {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  };
+
+  const runNewsToScript = () => {
+    const workspaceId = parseRequiredId('Workspace ID', pipelineForm.workspace_id);
+    const channelId = parseRequiredId('Channel ID', pipelineForm.channel_id);
+    const newsSourceId = parseOptionalId(pipelineForm.news_source_id);
+    if (!workspaceId || !channelId) {
+      return;
+    }
+    runPipelineStep('News to Script', '/api/pipelines/news-to-script', {
+      workspace_id: workspaceId,
+      channel_id: channelId,
+      news_source_id: newsSourceId
+    });
+  };
+
+  const runScriptToVoice = () => {
+    const scriptId = parseRequiredId('Script ID', pipelineForm.script_id);
+    if (!scriptId) {
+      return;
+    }
+    runPipelineStep('Script to Voice', '/api/pipelines/script-to-voice', { script_id: scriptId });
+  };
+
+  const runVoiceToAvatar = () => {
+    const audioId = parseRequiredId('Audio ID', pipelineForm.audio_id);
+    if (!audioId) {
+      return;
+    }
+    runPipelineStep('Voice to Avatar Video', '/api/pipelines/voice-to-avatar-video', { audio_id: audioId });
+  };
+
+  const runAssembly = () => {
+    const videoId = parseRequiredId('Video ID', pipelineForm.video_id);
+    if (!videoId) {
+      return;
+    }
+    runPipelineStep('Video Assembly', '/api/pipelines/video-assembly', {
+      video_id: videoId,
+      music_id: parseOptionalId(pipelineForm.music_id),
+      b_roll_prompts: pipelineForm.b_roll_prompts
+        ? pipelineForm.b_roll_prompts.split(',').map((item) => item.trim()).filter(Boolean)
+        : []
+    });
+  };
+
+  const runPublish = () => {
+    const videoId = parseRequiredId('Video ID', pipelineForm.video_id);
+    if (!videoId) {
+      return;
+    }
+    runPipelineStep('Publish', '/api/pipelines/publish', {
+      video_id: videoId,
+      platform: pipelineForm.platform
+    });
+  };
+
   React.useEffect(() => {
     const endpointMap = { workspaces: '/api/workspaces/', channels: '/api/channels/', avatars: '/api/avatars/', videos: '/api/videos/' };
 
@@ -136,6 +208,18 @@ const Home = () => {
       </section>
 
       <section className="feature-card reveal-up delay-2">
+        <h3>First-Run Setup Checklist</h3>
+        <p style={{ marginTop: '0.4rem' }}>Complete these in order before running pipeline actions.</p>
+        <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+          <a href="/workspaces">{stats.workspaces > 0 ? 'Done' : 'Missing'}: Create a workspace</a>
+          <a href="/avatars">{stats.avatars > 0 ? 'Done' : 'Missing'}: Create an avatar</a>
+          <a href="/channels">{stats.channels > 0 ? 'Done' : 'Missing'}: Create a channel linked to that avatar</a>
+          <a href="/news-sources">Open: Add at least one RSS or Reddit news source</a>
+          <a href="/scripts">Optional: Review generated scripts before voice</a>
+        </div>
+      </section>
+
+      <section className="feature-card reveal-up delay-2">
         <h3>API Auth Settings</h3>
         <p style={{ marginTop: '0.4rem' }}>Saved locally and sent as x-api-key and x-user-role on API requests.</p>
 
@@ -193,11 +277,11 @@ const Home = () => {
 
         <div className="table-toolbar" style={{ marginTop: '0.9rem' }}>
           <div className="toolbar-group">
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={() => runPipelineStep('News to Script', '/api/pipelines/news-to-script', { workspace_id: Number(pipelineForm.workspace_id), channel_id: Number(pipelineForm.channel_id), news_source_id: pipelineForm.news_source_id ? Number(pipelineForm.news_source_id) : null })}>Run News -> Script</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={() => runPipelineStep('Script to Voice', '/api/pipelines/script-to-voice', { script_id: Number(pipelineForm.script_id) })}>Run Script -> Voice</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={() => runPipelineStep('Voice to Avatar Video', '/api/pipelines/voice-to-avatar-video', { audio_id: Number(pipelineForm.audio_id) })}>Run Voice -> Avatar</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={() => runPipelineStep('Video Assembly', '/api/pipelines/video-assembly', { video_id: Number(pipelineForm.video_id), music_id: pipelineForm.music_id ? Number(pipelineForm.music_id) : null, b_roll_prompts: pipelineForm.b_roll_prompts ? pipelineForm.b_roll_prompts.split(',').map((item) => item.trim()).filter(Boolean) : [] })}>Run Assembly</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={() => runPipelineStep('Publish', '/api/pipelines/publish', { video_id: Number(pipelineForm.video_id), platform: pipelineForm.platform })}>Run Publish</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runNewsToScript}>Run News -> Script</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runScriptToVoice}>Run Script -> Voice</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runVoiceToAvatar}>Run Voice -> Avatar</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runAssembly}>Run Assembly</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep)} onClick={runPublish}>Run Publish</button>
           </div>
         </div>
 

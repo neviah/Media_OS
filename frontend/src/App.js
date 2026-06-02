@@ -3,6 +3,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Home from './pages/Home';
+import Workspaces from './pages/Workspaces';
 import Avatars from './pages/Avatars';
 import AvatarDetail from './pages/AvatarDetail';
 import Channels from './pages/Channels';
@@ -19,6 +20,7 @@ import './styles/App.css';
 
 const ROUTE_TITLES = {
   '/': 'Dashboard',
+  '/workspaces': 'Workspace Manager',
   '/avatars': 'Avatar Lab',
   '/channels': 'Channel Manager',
   '/music': 'Music Library',
@@ -74,6 +76,7 @@ function AppFrame() {
           <main className="page-container">
             <Routes>
               <Route path="/" element={<Home />} />
+              <Route path="/workspaces" element={<Workspaces />} />
               <Route path="/avatars" element={<Avatars />} />
               <Route path="/avatars/:id" element={<AvatarDetail />} />
               <Route path="/channels" element={<Channels />} />

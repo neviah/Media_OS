@@ -1,17 +1,22 @@
 # backend/pipelines/news_to_script.py
-"""
-News to Script Pipeline
-Fetches news, summarizes, and generates scripts using LLMs
+"""News to Script pipeline.
+
+Flow:
+1) Resolve and fetch active news from source (RSS or Reddit)
+2) Summarize top item with the task-routed LLM service
+3) Generate script + hashtags + QA check
+4) Persist script to DB
 """
 
 import logging
-from typing import Optional, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, Optional
 
-from backend.models.database import NewsSource, Script
-from backend.services.llm_service import llm_service
-from backend.database import SessionLocal
 from backend import models
+from backend.database import SessionLocal
+from backend.models.database import Channel, NewsSource, Script
+from backend.services.llm_service import llm_service
+from backend.services.news_ingestion_service import news_ingestion_service
 
 logger = logging.getLogger(__name__)
 
@@ -34,24 +39,19 @@ class NewsToScriptPipeline:
             logger.error(f"News source {news_source_id} not found")
             return []
         
-        # In a real implementation:
-        # 1. Based on source type (reddit, rss, etc.), fetch news
-        # 2. Apply filters (keywords, recency, score)
-        # 3. Return processed news items
-        
-        # For now, we'll use a placeholder implementation
-        # In a real system, this would connect to Reddit API, RSS feeds, etc.
-        mock_news = [
-            {
-                "title": "Sample News Article",
-                "content": "This is a sample news article content for demonstration purposes. In a real implementation, this would be fetched from actual news sources.",
-                "url": "https://example.com/news/1",
-                "source_id": news_source_id,
-                "score": 100,
-                "published_at": datetime.utcnow()
-            }
-        ]
-        return mock_news
+        try:
+            items = news_ingestion_service.fetch_news(
+                source_name=news_source.name,
+                source_url=news_source.source_url,
+                keywords=news_source.keywords,
+                limit=10,
+            )
+            news_source.last_pulled = datetime.utcnow()
+            self.db.commit()
+            return items
+        except Exception as exc:
+            logger.error(f"Failed fetching news source {news_source_id}: {exc}")
+            return []
     
     def summarize_news(self, news_item: Dict[str, Any]) -> str:
         """
@@ -64,22 +64,20 @@ class NewsToScriptPipeline:
             Summary text
         """
         try:
-            prompt = f"""
-            Please provide a concise summary of the following news article:
-            
-            Title: {news_item['title']}
-            Content: {news_item['content']}
-            
-            Summary:
-            """
-            
-            # Use the real LLM service
-            summary = llm_service.generate_text(prompt, max_length=150)
+            prompt = (
+                "Please provide a concise summary of the following news article.\n\n"
+                f"Title: {news_item.get('title', '')}\n"
+                f"Content: {news_item.get('content', '')}\n"
+                f"URL: {news_item.get('url', '')}\n\n"
+                "Summary:"
+            )
+            summary = llm_service.generate_text(prompt, task="summarize", max_tokens=220)
             return summary.strip()
         except Exception as e:
             logger.error(f"Error summarizing news: {e}")
             # Fallback to truncation
-            return news_item['content'][:200] + "..." if len(news_item['content']) > 200 else news_item['content']
+            content = news_item.get('content', '')
+            return content[:200] + "..." if len(content) > 200 else content
     
     def generate_script(self, summary: str, channel_id: int, 
                        script_style_preset: str = "informative") -> str:
@@ -95,34 +93,38 @@ class NewsToScriptPipeline:
             Generated script text
         """
         try:
-            # Get channel info for context
-            from backend.models.database import Channel
             channel = self.db.query(Channel).filter(Channel.id == channel_id).first()
             channel_name = channel.name if channel else "Unknown Channel"
-            
-            prompt = f"""
-            Generate an engaging video script based on the following news summary.
-            Channel: {channel_name}
-            Style: {script_style_preset}
-            
-            News Summary:
-            {summary}
-            
-            The script should be:
-            - Engaging and suitable for video presentation
-            - Appropriate length for a 1-3 minute video
-            - Include a hook, main content, and call-to-action if appropriate
-            - Match the {script_style_preset} style
-            
-            Script:
-            """
-            
-            # Use the real LLM service
-            script = llm_service.generate_text(prompt, max_length=500)
+
+            prompt = (
+                "Generate an engaging video script based on the following news summary.\n"
+                f"Channel: {channel_name}\n"
+                f"Style: {script_style_preset}\n\n"
+                f"News Summary:\n{summary}\n\n"
+                "Script:"
+            )
+
+            script = llm_service.generate_text(prompt, task="script", max_tokens=900)
             return script.strip()
         except Exception as e:
             logger.error(f"Error generating script: {e}")
             return f"[Script generation failed: {str(e)}]"
+
+    def _resolve_news_source_id(self, workspace_id: int, news_source_id: Optional[int]) -> Optional[int]:
+        if news_source_id is not None:
+            return news_source_id
+
+        source = (
+            self.db.query(NewsSource)
+            .filter(NewsSource.workspace_id == workspace_id, NewsSource.is_active == True)
+            .order_by(NewsSource.updated_at.desc())
+            .first()
+        )
+        if source:
+            return source.id
+
+        logger.warning(f"No active news source found for workspace {workspace_id}")
+        return None
     
     def process_news_to_script(self, workspace_id: int, channel_id: int, 
                               news_source_id: Optional[int] = None) -> Optional[Script]:
@@ -138,11 +140,9 @@ class NewsToScriptPipeline:
             Created Script object or None if failed
         """
         try:
-            # Determine news source to use
+            news_source_id = self._resolve_news_source_id(workspace_id=workspace_id, news_source_id=news_source_id)
             if news_source_id is None:
-                # Get default news source for workspace/channel
-                # In reality, this would come from channel/workspace config
-                news_source_id = 1  # Stub - in reality, we'd get this from config
+                return None
             
             # Fetch news
             news_items = self.fetch_news_from_source(news_source_id)
@@ -150,30 +150,32 @@ class NewsToScriptPipeline:
                 logger.warning(f"No news found for source {news_source_id}")
                 return None
             
-            # Process the top news item
-            top_news = news_items[0]
+            # Use highest score if provided (Reddit), otherwise first feed item.
+            top_news = sorted(news_items, key=lambda item: item.get("score") or 0, reverse=True)[0]
             
             # Summarize
             summary = self.summarize_news(top_news)
             
             # Generate script
-            # Get channel's script style preset
-            from backend.models.database import Channel
             channel = self.db.query(Channel).filter(Channel.id == channel_id).first()
             script_style = channel.script_style_preset if channel else "informative"
-            
+
             script_content = self.generate_script(summary, channel_id, script_style)
+            hashtags = llm_service.generate_hashtags(script_content, count=5)
+            qa_result = llm_service.qa_check(script_content, summary)
+            is_validated = qa_result.strip().upper().startswith("PASS")
             
             # Create script record
             new_script = models.Script(
                 workspace_id=workspace_id,
                 channel_id=channel_id,
                 news_source_id=news_source_id,
-                title=f"Script: {top_news['title'][:50]}...",
+                title=f"Script: {top_news.get('title', 'Untitled')[:80]}",
                 content=script_content,
                 summary=summary,
-                hashtags="#news #update",  # Could be generated by LLM
-                is_validated=False  # Will be validated by Hermes Agent
+                hashtags=hashtags,
+                is_validated=is_validated,
+                validation_notes=None if is_validated else qa_result,
             )
             
             self.db.add(new_script)

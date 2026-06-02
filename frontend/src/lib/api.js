@@ -30,6 +30,18 @@ export async function apiPost(path, payload) {
   return parseResponse(response);
 }
 
+export async function apiPut(path, payload) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  return parseResponse(response);
+}
+
 export async function apiDelete(path) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: 'DELETE'

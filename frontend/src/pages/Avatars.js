@@ -1,7 +1,7 @@
 // frontend/src/pages/Avatars.js
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { apiDelete, apiGet, apiPost } from '../lib/api';
+import { apiDelete, apiGet, apiPost, apiPut } from '../lib/api';
 
 const Avatars = () => {
   const [avatars, setAvatars] = useState([]);
@@ -87,6 +87,35 @@ const Avatars = () => {
       setError('');
     } catch {
       setError('Failed to delete avatar.');
+    }
+  };
+
+  const handleEditAvatar = async (avatar) => {
+    const name = window.prompt('Avatar name', avatar.name || '');
+    if (name === null || !name.trim()) {
+      return;
+    }
+
+    const styleHints = window.prompt('Style hints', avatar.style_hints || '');
+    if (styleHints === null) {
+      return;
+    }
+
+    const channelType = window.prompt('Channel type', avatar.channel_type || '');
+    if (channelType === null) {
+      return;
+    }
+
+    try {
+      const updatedAvatar = await apiPut(`/api/avatars/${avatar.id}`, {
+        name: name.trim(),
+        style_hints: styleHints.trim() || null,
+        channel_type: channelType.trim() || null
+      });
+      setAvatars((previous) => previous.map((item) => (item.id === avatar.id ? updatedAvatar : item)));
+      setError('');
+    } catch {
+      setError('Failed to update avatar.');
     }
   };
 
@@ -203,6 +232,12 @@ const Avatars = () => {
                       className="text-indigo-600 hover:text-indigo-900"
                     >
                       View
+                    </button>
+                    <button 
+                      onClick={() => handleEditAvatar(avatar)}
+                      className="ml-4 text-yellow-600 hover:text-yellow-900"
+                    >
+                      Edit
                     </button>
                     <button 
                       onClick={() => handleDeleteAvatar(avatar.id)}

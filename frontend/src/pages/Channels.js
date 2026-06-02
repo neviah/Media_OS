@@ -1,7 +1,7 @@
 // frontend/src/pages/Channels.js
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { apiDelete, apiGet, apiPost } from '../lib/api';
+import { apiDelete, apiGet, apiPost, apiPut } from '../lib/api';
 
 const Channels = () => {
   const [channels, setChannels] = useState([]);
@@ -95,6 +95,32 @@ const Channels = () => {
   const resolveAvatarName = (avatarId) => {
     const avatar = avatars.find((item) => item.id === avatarId);
     return avatar ? avatar.name : 'N/A';
+  };
+
+  const handleEditChannel = async (channel) => {
+    const name = window.prompt('Channel name', channel.name || '');
+    if (name === null || !name.trim()) {
+      return;
+    }
+
+    const scriptStyle = window.prompt('Script style preset', channel.script_style_preset || '');
+    if (scriptStyle === null) {
+      return;
+    }
+
+    const isActive = window.confirm('Should this channel remain active?');
+
+    try {
+      const updatedChannel = await apiPut(`/api/channels/${channel.id}`, {
+        name: name.trim(),
+        script_style_preset: scriptStyle.trim() || null,
+        is_active: isActive
+      });
+      setChannels((previous) => previous.map((item) => (item.id === channel.id ? updatedChannel : item)));
+      setError('');
+    } catch {
+      setError('Failed to update channel.');
+    }
   };
 
   if (loading) {
@@ -226,6 +252,12 @@ const Channels = () => {
                       className="text-indigo-600 hover:text-indigo-900"
                     >
                       Details
+                    </button>
+                    <button 
+                      onClick={() => handleEditChannel(channel)}
+                      className="ml-4 text-yellow-600 hover:text-yellow-900"
+                    >
+                      Edit
                     </button>
                     <button 
                       onClick={() => handleDeleteChannel(channel.id)}

@@ -448,6 +448,54 @@ body {
   padding: 0.5rem 0.55rem;
 }
 
+.divide-y.divide-gray-200 {
+  border-color: var(--border);
+}
+
+.bg-gray-50 {
+  background: rgba(245, 250, 248, 0.9);
+}
+
+.bg-white {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.text-gray-900 {
+  color: var(--ink);
+}
+
+.text-gray-500 {
+  color: var(--muted);
+}
+
+.hover\:bg-gray-50:hover {
+  background: rgba(231, 243, 239, 0.75);
+}
+
+[data-theme='dark'] .bg-gray-50 {
+  background: rgba(18, 33, 28, 0.9);
+}
+
+[data-theme='dark'] .bg-white {
+  background: rgba(14, 27, 23, 0.92);
+}
+
+[data-theme='dark'] .hover\:bg-gray-50:hover {
+  background: rgba(39, 67, 58, 0.45);
+}
+
+[data-theme='dark'] .text-red-600,
+[data-theme='dark'] .text-yellow-600,
+[data-theme='dark'] .text-indigo-600 {
+  color: #84dac5;
+}
+
+[data-theme='dark'] .text-red-600:hover,
+[data-theme='dark'] .text-yellow-600:hover,
+[data-theme='dark'] .text-indigo-600:hover {
+  color: #b2f2e3;
+}
+
 .reveal-up {
   opacity: 0;
   transform: translateY(8px);

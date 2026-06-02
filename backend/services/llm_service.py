@@ -1,216 +1,361 @@
 # backend/services/llm_service.py
 """
-LLM Service for text generation and summarization
-Handles interactions with various free LLMs (DeepSeek, Qwen, Llama, Phi, Gemma)
+LLM Service — Task-Routing AI Backend
+======================================
+
+This service routes each pipeline task to the best available model.
+It supports three providers, tried in this priority order:
+
+  1. OpenRouter  (cloud, free tier available — preferred for quality)
+  2. LM Studio   (local, default port 1234)
+  3. Ollama      (local, default port 11434)
+
+All three providers expose an OpenAI-compatible REST API, so the same
+client code works with all of them.
+
+── Environment Variables ──────────────────────────────────────────────
+  OPENROUTER_API_KEY   Your OpenRouter key (get one free at openrouter.ai)
+  OPENROUTER_BASE_URL  Override OpenRouter endpoint (default: https://openrouter.ai/api/v1)
+
+  LOCAL_LLM_BASE       Override local base URL. If not set, the service
+                       auto-detects LM Studio (:1234) or Ollama (:11434).
+  LOCAL_LLM_MODEL      Model name to send for local requests. Must match
+                       whatever model you have loaded in LM Studio / Ollama.
+                       Default: "local-model" (LM Studio uses this for the
+                       currently loaded model).
+
+  LLM_OVERRIDE_MODEL   When set, ALL tasks use this single model+provider,
+                       bypassing the task-routing table entirely.
+                       Useful for testing or forcing a specific model.
+                       Example: LLM_OVERRIDE_MODEL=openrouter:qwen/qwen-2.5-72b-instruct:free
+
+── Task → Model Routing Table ────────────────────────────────────────
+  classify   → local model (fast, low-stakes; no API key needed)
+  summarize  → openrouter: meta-llama/llama-3.3-70b-instruct:free
+  script     → openrouter: qwen/qwen-2.5-72b-instruct:free  (best free creative writing)
+  qa_check   → openrouter: deepseek/deepseek-r1:free         (reasoning model for fact-checking)
+  default    → openrouter: meta-llama/llama-3.3-70b-instruct:free
+
+  If OpenRouter is unavailable (no key / quota), the service falls back
+  to whatever local model is loaded.
+
+── Adding New Models ──────────────────────────────────────────────────
+  Edit TASK_MODEL_MAP below. Keys are task names passed to generate_text().
+  Values are "provider:model_id" strings.  Providers: "openrouter", "local".
+
+── LM Studio vs. Ollama ──────────────────────────────────────────────
+  LM Studio  → http://localhost:1234/v1   (default, no auth needed)
+  Ollama     → http://localhost:11434/v1  (no auth needed)
+  The service auto-probes both at startup if LOCAL_LLM_BASE is not set.
 """
 
 import logging
-from typing import Optional, Dict, Any
-import json
 import os
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-class LLMService:
-    def __init__(self, model_name: str = None, api_base: str = None):
-        """
-        Initialize LLM service
-        
-        Args:
-            model_name: Name of the LLM to use (deepseek, qwen, llama, phi, gemma, etc.)
-            api_base: Base URL for the LLM API (if using external API)
-        """
-        # In a real implementation, we would:
-        # 1. Load the model locally or configure API connection
-        # 2. Set up tokenizer and generation parameters
-        # 3. Handle model loading/unloading based on VRAM availability
-        
-        self.model_name = model_name or os.getenv("DEFAULT_LLM_MODEL", "phi-2")  # Default to a small model
-        self.api_base = api_base or os.getenv("LLM_API_BASE", "http://localhost:8000/v1")  # Default to local API
-        self.is_initialized = False
-        
-        # Generation parameters
-        self.default_params = {
-            "temperature": 0.7,
-            "max_length": 512,
-            "top_p": 0.9,
-            "repetition_penalty": 1.1
-        }
-        
-        logger.info(f"LLM Service initialized for model: {self.model_name}")
-    
-    def initialize(self):
-        """Initialize the LLM model or API connection"""
-        # In a real implementation:
-        # 1. If using local model: load model and tokenizer
-        # 2. If using API: test connection and validate model availability
-        # 3. Set up any necessary context or prompts
-        
-        self.is_initialized = True
-        logger.info(f"LLM model {self.model_name} initialized")
-        return True
-    
-    def generate_text(self, prompt: str, 
-                     max_length: int = None,
-                     temperature: float = None,
-                     top_p: float = None,
-                     stop: Optional[list] = None) -> str:
-        """
-        Generate text from a prompt using the LLM
-        
-        Args:
-            prompt: Input text prompt
-            max_length: Maximum tokens to generate
-            temperature: Sampling temperature (0.0 to 1.0+)
-            top_p: Nucleus sampling parameter
-            stop: List of strings that stop generation when encountered
-            
-        Returns:
-            Generated text string
-        """
-        if not self.is_initialized:
-            self.initialize()
-        
-        # Use default parameters if not specified
-        params = self.default_params.copy()
-        if max_length is not None:
-            params["max_length"] = max_length
-        if temperature is not None:
-            params["temperature"] = temperature
-        if top_p is not None:
-            params["top_p"] = top_p
-        if stop is not None:
-            params["stop"] = stop
-        
-        # In a real implementation, we would:
-        # 1. Tokenize the prompt
-        # 2. Run the model to generate text
-        # 3. Detokenize and return the result
-        # 4. Apply any post-processing (stop words, etc.)
-        
-        # For stub, we'll return a placeholder response
-        # In reality, this would call the actual LLM
-        
-        logger.debug(f"Generating text with params: {params}")
-        
-        # Simple stub responses based on prompt content
-        if "summary" in prompt.lower() or "summarize" in prompt.lower():
-            return "This is a concise summary of the provided news article, highlighting the key points and main takeaways."
-        elif "script" in prompt.lower() or "generate" in prompt.lower():
-            return "[Host appears on screen with friendly greeting]\n\nHello everyone! Welcome back to our channel. Today we're discussing an interesting development that I think you'll find fascinating.\n\n[Brief pause for emphasis]\n\nThe key points we need to cover are:\n1. What happened and why it matters\n2. How this affects our audience\n3. What we can expect moving forward\n\nLet's dive right in...\n\n[Detailed explanation of the topic with examples]\n\nAs we've seen, this development has significant implications. It's important to stay informed and consider how this might impact your decisions.\n\n[Call to action]\n\nIf you found this video helpful, please consider liking, subscribing, and sharing with others who might benefit from this information. Let us know your thoughts in the comments below!\n\n[Closing remarks]\n\nThanks for watching, and we'll see you in the next video!"
-        elif "title" in prompt.lower() or "hashtag" in prompt.lower() or "metadata" in prompt.lower():
-            if "title:" in prompt.lower():
-                return "TITLE: Exciting News Update You Need to Know\nDESCRIPTION: Stay informed with our latest coverage of this important development. We break down what happened, why it matters, and what it means for you.\nHASHTAGS: #News #Update #Breaking #StayInformed"
-            else:
-                return "Exciting News Update You Need to Know"
-        else:
-            # Generic response
-            return f"This is a generated response to the prompt: '{prompt[:50]}...' [Response truncated for stub]"
-    
-    def summarize(self, text: str, max_length: int = 150) -> str:
-        """
-        Summarize text using LLM
-        
-        Args:
-            text: Text to summarize
-            max_length: Maximum length of summary
-            
-        Returns:
-            Summary text
-        """
-        prompt = f"""
-        Please provide a concise summary of the following text:
-        
-        {text}
-        
-        Summary:
-        """
-        return self.generate_text(prompt, max_length=max_length)
-    
-    def generate_script(self, summary: str, style: str = "informative", 
-                       length: str = "medium") -> str:
-        """
-        Generate a video script from a summary
-        
-        Args:
-            summary: News summary or topic description
-            style: Script style (informative, entertaining, persuasive, etc.)
-            length: Desired length (short, medium, long)
-            
-        Returns:
-            Generated script text
-        """
-        length_guide = {
-            "short": "aim for a 30-60 second video",
-            "medium": "aim for a 1-2 minute video", 
-            "long": "aim for a 2-3 minute video"
-        }
-        
-        prompt = f"""
-        Generate an engaging video script based on the following summary.
-        Style: {style}
-        Length: {length_guide.get(length, length_guide['medium'])}
-        
-        Summary:
-        {summary}
-        
-        The script should include:
-        - A strong hook to grab attention
-        - Clear, well-organized main content
-        - Appropriate pacing for the {style} style
-        - A call-to-action if suitable
-        - Natural language suitable for spoken delivery
-        
-        Script:
-        """
-        return self.generate_text(prompt, max_length=800)
-    
-    def generate_hashtags(self, content: str, count: int = 5) -> str:
-        """
-        Generate relevant hashtags for content
-        
-        Args:
-            content: Content to generate hashtags for
-            count: Number of hashtags to generate
-            
-        Returns:
-            Comma-separated hashtags string
-        """
-        prompt = f"""
-        Generate {count} relevant hashtags for the following content.
-        Make sure they are appropriate, relevant, and likely to improve discoverability.
-        
-        Content:
-        {content}
-        
-        Hashtags (comma-separated):
-        """
-        result = self.generate_text(prompt, max_length=100)
-        # Clean up result to just be hashtags
-        hashtags = result.replace('#', '').split(',')
-        hashtags = [tag.strip() for tag in hashtags if tag.strip()]
-        return ','.join([f"#{tag}" for tag in hashtags[:count]])
-    
-    def generate_title(self, content: str) -> str:
-        """
-        Generate an engaging title for content
-        
-        Args:
-            content: Content to generate title for
-            
-        Returns:
-            Title string
-        """
-        prompt = f"""
-        Generate a catchy, engaging title for the following content.
-        The title should be under 100 characters and appropriate for the topic.
-        
-        Content:
-        {content}
-        
-        Title:
-        """
-        return self.generate_text(prompt, max_length=50).strip()
+# ── Task → Model routing table ────────────────────────────────────────────────
+# Format: "provider:model_id"   provider is "openrouter" or "local"
+# All openrouter model IDs ending in ":free" are on the free tier.
+TASK_MODEL_MAP: dict[str, str] = {
+    "classify":  "local:local-model",                                        # Small/fast; run locally
+    "summarize": "openrouter:meta-llama/llama-3.3-70b-instruct:free",        # Fast, long-context
+    "script":    "openrouter:qwen/qwen-2.5-72b-instruct:free",               # Best free creative writing
+    "qa_check":  "openrouter:deepseek/deepseek-r1:free",                     # Reasoning model for fact-checking
+    "hashtags":  "openrouter:meta-llama/llama-3.1-8b-instruct:free",         # Trivial task; small model
+    "title":     "openrouter:meta-llama/llama-3.1-8b-instruct:free",         # Trivial task; small model
+    "default":   "openrouter:meta-llama/llama-3.3-70b-instruct:free",        # Fallback for anything else
+}
 
-# Global LLM service instance
+# ── Local provider auto-detection ─────────────────────────────────────────────
+_LOCAL_CANDIDATES = [
+    ("LM Studio", "http://localhost:1234/v1"),
+    ("Ollama",    "http://localhost:11434/v1"),
+]
+
+
+def _detect_local_base() -> Optional[str]:
+    """
+    Probe known local LLM server ports. Returns the first responding base URL,
+    or None if neither is reachable. Called once at service init.
+    """
+    import httpx
+    custom = os.getenv("LOCAL_LLM_BASE")
+    if custom:
+        return custom.rstrip("/")
+    for name, url in _LOCAL_CANDIDATES:
+        try:
+            r = httpx.get(f"{url}/models", timeout=2.0)
+            if r.status_code < 500:
+                logger.info(f"Local LLM detected: {name} at {url}")
+                return url
+        except Exception:
+            pass
+    logger.warning("No local LLM server detected (LM Studio or Ollama). Local tasks will fail.")
+    return None
+
+
+class LLMService:
+    """
+    Task-routing LLM service.
+
+    Call generate_text(prompt, task="summarize") to route the request to the
+    model best suited for that task.  Callers don't need to know which model
+    or provider is used — just pass the task name.
+
+    Supported task names: classify, summarize, script, qa_check, hashtags,
+    title, default (catch-all).
+    """
+
+    def __init__(self):
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
+        self.openrouter_base    = os.getenv("OPENROUTER_BASE_URL",
+                                            "https://openrouter.ai/api/v1").rstrip("/")
+        self.local_model        = os.getenv("LOCAL_LLM_MODEL", "local-model")
+        self.override           = os.getenv("LLM_OVERRIDE_MODEL", "")
+
+        # Lazy-detect local server; stored after first call
+        self._local_base: Optional[str] = None
+        self._local_probed = False
+
+        if self.openrouter_api_key:
+            logger.info("LLMService: OpenRouter key present — cloud models available.")
+        else:
+            logger.warning(
+                "LLMService: OPENROUTER_API_KEY not set. "
+                "All tasks will fall back to the local LLM server."
+            )
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _local_base_url(self) -> Optional[str]:
+        if not self._local_probed:
+            self._local_base = _detect_local_base()
+            self._local_probed = True
+        return self._local_base
+
+    def _get_openai_client(self, provider: str):
+        """Return a configured openai.OpenAI client for the given provider."""
+        try:
+            import openai
+        except ImportError as exc:
+            raise RuntimeError(
+                "openai package is required. Run: pip install openai"
+            ) from exc
+
+        if provider == "openrouter":
+            if not self.openrouter_api_key:
+                raise RuntimeError(
+                    "OPENROUTER_API_KEY env var is not set. "
+                    "Sign up free at https://openrouter.ai and set the key."
+                )
+            return openai.OpenAI(
+                api_key=self.openrouter_api_key,
+                base_url=self.openrouter_base,
+            )
+
+        # provider == "local" (LM Studio or Ollama)
+        local_base = self._local_base_url()
+        if not local_base:
+            raise RuntimeError(
+                "No local LLM server found on ports 1234 (LM Studio) or 11434 (Ollama). "
+                "Start LM Studio or Ollama, or set LOCAL_LLM_BASE env var."
+            )
+        return openai.OpenAI(api_key="local", base_url=local_base)
+
+    def _resolve_task(self, task: str) -> tuple[str, str]:
+        """
+        Resolve a task name to (provider, model_id).
+        Honors LLM_OVERRIDE_MODEL if set.
+        """
+        if self.override:
+            parts = self.override.split(":", 1)
+            if len(parts) == 2:
+                return parts[0], parts[1]
+            # Bare model name with no provider prefix → assume openrouter
+            return "openrouter", self.override
+
+        route = TASK_MODEL_MAP.get(task) or TASK_MODEL_MAP["default"]
+        provider, model_id = route.split(":", 1)
+        return provider, model_id
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def generate_text(
+        self,
+        prompt: str,
+        task: str = "default",
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        system_prompt: Optional[str] = None,
+        # Legacy param names kept for backward compatibility
+        max_length: int = None,
+        top_p: float = None,
+        stop: Optional[list] = None,
+    ) -> str:
+        """
+        Generate text for the given prompt, routing to the best model for the task.
+
+        Args:
+            prompt:        The user-facing prompt text.
+            task:          Pipeline task name used for model routing.
+                           One of: classify, summarize, script, qa_check,
+                           hashtags, title, default.
+            max_tokens:    Maximum tokens to generate (default 1024).
+            temperature:   Sampling temperature 0.0–2.0 (default 0.7).
+            system_prompt: Optional system message prepended to the conversation.
+            max_length:    Alias for max_tokens (backward-compat).
+            top_p:         Nucleus sampling (passed through to the API).
+            stop:          Stop sequences (passed through to the API).
+
+        Returns:
+            Generated text string.
+
+        Raises:
+            RuntimeError: If the selected provider is unavailable.
+        """
+        effective_max = max_length if max_length is not None else max_tokens
+        provider, model_id = self._resolve_task(task)
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        kwargs: dict = {
+            "model":       model_id,
+            "messages":    messages,
+            "max_tokens":  effective_max,
+            "temperature": temperature,
+        }
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if stop:
+            kwargs["stop"] = stop
+
+        logger.debug(f"LLM request: task={task} provider={provider} model={model_id}")
+
+        # Try primary provider; fall back to local if cloud fails
+        try:
+            client = self._get_openai_client(provider)
+            response = client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content.strip()
+
+        except Exception as primary_err:
+            if provider == "openrouter":
+                logger.warning(
+                    f"OpenRouter call failed ({primary_err}). "
+                    "Retrying with local LLM..."
+                )
+                try:
+                    local_client = self._get_openai_client("local")
+                    kwargs["model"] = self.local_model
+                    response = local_client.chat.completions.create(**kwargs)
+                    return response.choices[0].message.content.strip()
+                except Exception as local_err:
+                    raise RuntimeError(
+                        f"Both OpenRouter and local LLM failed.\n"
+                        f"  OpenRouter error: {primary_err}\n"
+                        f"  Local error:      {local_err}"
+                    ) from local_err
+            raise
+
+    # ── Convenience wrappers (thin; keep callers readable) ────────────────────
+
+    def summarize(self, text: str, max_tokens: int = 300) -> str:
+        """Summarize the given text. Routes to the summarize model."""
+        prompt = (
+            "Provide a concise, factual summary of the following article. "
+            "Focus on the key facts, actors, and implications. "
+            "Write 2–4 sentences.\n\n"
+            f"{text}\n\nSummary:"
+        )
+        return self.generate_text(
+            prompt,
+            task="summarize",
+            max_tokens=max_tokens,
+            system_prompt="You are a professional news editor. Be concise and factual.",
+        )
+
+    def generate_script(
+        self,
+        summary: str,
+        style: str = "informative",
+        length: str = "medium",
+    ) -> str:
+        """
+        Generate a video script from a news summary.
+        Routes to the script model (best free creative writing model).
+        """
+        word_targets = {"short": "150–250", "medium": "250–400", "long": "400–600"}
+        target = word_targets.get(length, word_targets["medium"])
+
+        prompt = (
+            f"Write a {style} video script based on the following news summary.\n"
+            f"Target length: {target} words (spoken delivery).\n\n"
+            f"Summary:\n{summary}\n\n"
+            "Requirements:\n"
+            "- Strong hook in the first 10 seconds\n"
+            "- Clear, conversational language — no jargon\n"
+            "- Stage directions in [square brackets]\n"
+            "- End with a call-to-action (like, subscribe, comment)\n\n"
+            "Script:"
+        )
+        return self.generate_text(
+            prompt,
+            task="script",
+            max_tokens=900,
+            system_prompt=(
+                "You are an experienced YouTube scriptwriter. "
+                "Write natural, engaging scripts suitable for text-to-speech."
+            ),
+        )
+
+    def qa_check(self, script: str, source_summary: str) -> str:
+        """
+        Fact-check a generated script against the source summary.
+        Routes to the reasoning model (DeepSeek R1 free).
+        Returns a short assessment: PASS or list of issues.
+        """
+        prompt = (
+            "Compare the following video script to the source summary.\n"
+            "Identify any factual errors, unsupported claims, or hallucinations.\n\n"
+            f"Source summary:\n{source_summary}\n\n"
+            f"Script to check:\n{script}\n\n"
+            "Reply with either:\n"
+            '  PASS — if the script accurately represents the source\n'
+            "  ISSUES: [bullet list of specific problems]\n\n"
+            "Assessment:"
+        )
+        return self.generate_text(
+            prompt,
+            task="qa_check",
+            max_tokens=300,
+            temperature=0.2,
+            system_prompt="You are a rigorous fact-checker. Be precise and brief.",
+        )
+
+    def generate_hashtags(self, content: str, count: int = 5) -> str:
+        """Generate comma-separated hashtags for content."""
+        prompt = (
+            f"Generate exactly {count} relevant hashtags for the content below.\n"
+            "Return only the hashtags, comma-separated, no explanation.\n\n"
+            f"Content:\n{content}\n\nHashtags:"
+        )
+        result = self.generate_text(prompt, task="hashtags", max_tokens=80, temperature=0.5)
+        tags = [t.strip().lstrip("#") for t in result.split(",") if t.strip()]
+        return ",".join(f"#{t}" for t in tags[:count])
+
+    def generate_title(self, content: str) -> str:
+        """Generate a short, catchy title for the given content."""
+        prompt = (
+            "Generate ONE catchy, YouTube-optimised title (under 80 characters) "
+            "for the following content. Return only the title, nothing else.\n\n"
+            f"Content:\n{content}\n\nTitle:"
+        )
+        return self.generate_text(prompt, task="title", max_tokens=60, temperature=0.8).strip()
+
+
+# ── Module-level singleton ─────────────────────────────────────────────────────
 llm_service = LLMService()

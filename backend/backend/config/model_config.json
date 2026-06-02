@@ -1,0 +1,30 @@
+# backend/config/model_config.json
+{
+  "flux": {
+    "model": "blackforestlabs/FLUX.1-schnell",
+    "variant": null,
+    "reason": "VRAM 6-12GB - using Schnell for balance of speed/quality"
+  },
+  "liveportrait": {
+    "model": "liveportrait/base",
+    "resolution": "384x384",
+    "reason": "VRAM 6-12GB - using medium resolution"
+  },
+  "musicgen": {
+    "model": "facebook/musicgen-medium",
+    "duration": 30,
+    "reason": "VRAM 6-12GB - using medium model"
+  },
+  "llm": {
+    "model": "TheBloke/Llama-2-7B-chat-GGUF",
+    "reason": "VRAM 6-12GB - using medium LLM"
+  },
+  "recommendation": {
+    "gpu_detected": true,
+    "gpu_vram_mb": 8188,
+    "gpu_model": "NVIDIA GeForce RTX 3060",
+    "suggested_setup": "GPU Accelerated"
+  },
+  "last_updated": "2026-06-01T16:20:00Z",
+  "detection_timestamp": "2026-06-01T16:20:00Z"
+}

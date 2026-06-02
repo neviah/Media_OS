@@ -1,0 +1,352 @@
+﻿Media Control Center – Specification Document (Draft)
+1. System overview
+Goal:
+ A local, fully automated Media Control Center that:
+* Ingests news (e.g., from Reddit subreddits).
+* Generates scripts using LLMs.
+* Creates voice + talking‑avatar videos using local models.
+* Adds curated background music from an approved library.
+* Publishes to multiple social channels (YouTube, TikTok, Instagram, etc.).
+* Tracks metrics per channel.
+* Runs under a beautiful React + Tailwind UI and can be orchestrated by Hermes Agent.
+________________
+
+
+2. High‑level architecture
+2.1 Components
+* Frontend: React + Tailwind, SPA dashboard.
+* Backend API: FastAPI (or Node/Express), REST + WebSocket.
+* Orchestrator: Hermes Agent (local harness) acting as the “director.”
+* LLMs: Free local/remote models (DeepSeek, Qwen, Llama, etc.) as “writers.”
+* Media models (local):
+   * Flux – avatar + thumbnail + B‑roll image generation.
+   * LivePortrait – talking‑head animation from image + audio. arXiv.org Hugging Face
+   * OpenVoice – voice cloning / TTS.
+   * MusicGen / similar – background music generation.
+* Storage:
+   * Postgres/SQLite for structured data.
+   * File system for media assets.
+   * Optional Redis for queues.
+2.2 Core concepts
+* Avatar: A synthetic persona (e.g., “Jake”) with reference images, voice, and style.
+* Channel: A logical “brand” (e.g., Science News, Politics Daily) mapped to social accounts.
+* Workspace: A container that groups channels, avatars, assets, and settings.
+* Pipeline: A defined sequence (News → Script → Voice → Avatar → Video → Upload).
+________________
+
+
+3. Data model
+3.1 Avatar
+Fields:
+* id
+* name (e.g., “Jake”)
+* workspace_id
+* base_portrait_path
+* reference_sheet_paths (multi‑angle images)
+* voice_profile_id (OpenVoice)
+* style_tags (e.g., “calm”, “science”, “formal”)
+* status (draft/approved)
+Behavior:
+* On creation, system:
+   * Uses Flux to generate a base portrait.
+   * Generates a multi‑angle reference sheet (e.g., 6–8 views).
+   * Lets user approve/reject.
+   * Once approved, avatar becomes available for channels.
+3.2 Channel
+Fields:
+* id
+* workspace_id
+* name (e.g., “Science Daily”)
+* avatar_id (primary host)
+* platform_configs (YouTube/TikTok/Instagram/X credentials + settings)
+* script_style_preset (tone, length, persona)
+* music_policy (allowed genres, volume, must‑use library)
+* schedule (cron‑like or “N videos/day”)
+* status (active/paused)
+3.3 Workspace
+Fields:
+* id
+* name
+* description
+* channels[]
+* avatars[]
+* music_library[]
+* global_settings (LLM choice, news sources, etc.)
+3.4 Music asset
+Fields:
+* id
+* workspace_id
+* file_path
+* tags (genre, mood, tempo)
+* duration
+* approved (boolean)
+* created_by (user or generator)
+Behavior:
+* Music is generated → previewed → approved or discarded.
+* Only approved tracks are used in automated videos.
+3.5 Content item (video job)
+Fields:
+* id
+* channel_id
+* topic_source (e.g., subreddit + post id)
+* script_text
+* audio_path
+* avatar_video_path
+* final_video_path
+* status (draft/generating/ready/published/failed)
+* platform_publish_status (per platform)
+* metrics_snapshot_id (latest metrics)
+________________
+
+
+4. Pipelines
+4.1 News → Script pipeline
+Inputs:
+* Channel (with script style preset).
+* News source config (e.g., Reddit subreddits).
+Steps:
+1. News fetcher:
+   * Pulls posts from configured subreddits (e.g., r/worldnews, r/science).
+   * Filters by score, recency, keywords.
+2. Summarizer (LLM):
+   * Summarizes selected posts into a coherent narrative.
+3. Script generator (LLM):
+   * Generates a script according to:
+
+   * Length (e.g., 60–90 seconds).
+   * Tone (e.g., calm, punchy).
+   * Persona (avatar’s style).
+   4. Hermes validation:
+   * Checks length, structure, clarity.
+   * Optionally rewrites or trims.
+   5. Store script as part of a Content item.
+Models:
+   * Free LLM (DeepSeek/Qwen/etc.) for summarization + script.
+   * Hermes Agent orchestrates and validates.
+4.2 Script → Voice pipeline
+Inputs:
+   * Script text.
+   * Avatar (with voice_profile_id).
+Steps:
+   1. TTS / voice cloning (OpenVoice):
+   * Use avatar’s voice profile.
+   * Generate clean narration audio.
+   2. Audio post‑processing:
+   * Normalize volume.
+   * Optional noise reduction.
+   3. Store audio_path in Content item.
+4.3 Avatar animation pipeline
+Inputs:
+   * Avatar (base portrait or selected reference image).
+   * Audio file.
+Steps:
+   1. Preprocessing:
+   * Crop/align face if needed.
+   2. LivePortrait:
+   * Animate avatar using audio as driver.
+   * Output talking‑head video. deepwiki.com Github
+   3. Store avatar_video_path.
+4.4 Video assembly pipeline
+Inputs:
+   * Avatar video.
+   * Approved background music (from Music Library).
+   * Optional B‑roll images (Flux) or clips.
+Steps:
+   1. Select music:
+   * Hermes picks from approved tracks matching mood/tags.
+   2. Generate B‑roll (optional):
+   * Use Flux to create relevant imagery (e.g., science visuals).
+   3. Compose final video:
+   * Use FFmpeg/MoviePy:
+   * Layer avatar video.
+   * Add background music (ducked under voice).
+   * Add captions (LLM‑generated from script).
+   * Add intro/outro if configured.
+   4. Store final_video_path.
+4.5 Publishing pipeline
+Inputs:
+   * Final video.
+   * Channel platform configs.
+Steps:
+   1. Per‑platform metadata generation:
+   * Title, description, tags, hashtags (LLM).
+   2. Upload:
+   * Use platform APIs or browser automation (Playwright/Puppeteer).
+   3. Record publish status and URLs.
+4.6 Metrics pipeline (Phase 2)
+Steps:
+   1. Periodically fetch:
+   * Views, likes, comments, watch time, subs, etc.
+   2. Store metrics snapshots per Content item and Channel.
+   3. Expose metrics in dashboard (graphs, comparisons across channels).
+________________
+
+
+5. Avatar Lab – detailed behavior
+5.1 Avatar creation flow
+   1. User clicks “Create Avatar”.
+   2. User sets:
+   * Name (e.g., Jake).
+   * Gender/age/ethnicity/style hints.
+   * Channel type (science, politics, tech, etc.).
+   3. System uses Flux to generate:
+   * Base portrait.
+   * Multi‑angle reference sheet (N views).
+   4. UI shows:
+   * Base portrait.
+   * Reference sheet.
+   5. User can:
+   * Regenerate.
+   * Edit prompts.
+   * Approve avatar.
+   6. On approval:
+   * Avatar saved with:
+   * base_portrait_path
+   * reference_sheet_paths
+   * style_tags
+5.2 Voice profile creation
+   1. User chooses:
+   * Synthetic voice (prompt‑based).
+   * Or clones from a short sample (if available).
+   2. OpenVoice generates a voice profile.
+   3. Avatar links to voice_profile_id.
+________________
+
+
+6. Music Library – controlled generation
+6.1 Music generation flow
+   1. User opens Music Lab.
+   2. User sets:
+   * Genre, mood, tempo, duration.
+   3. Music model (e.g., MusicGen) generates a track.
+   4. UI:
+   * Plays preview.
+   * Shows waveform + metadata.
+   5. User:
+   * Approves → track saved as approved.
+   * Discards → track deleted.
+6.2 Usage in pipelines
+   * Hermes never uses unapproved tracks.
+   * For each video:
+   * Hermes filters music by:
+   * Workspace
+   * Channel
+   * Tags (mood/tempo)
+   * Picks one track (or random from subset).
+________________
+
+
+7. Multi‑workspace & multi‑channel handling
+7.1 Workspaces
+   * Each workspace:
+   * Has its own avatars, music, channels, settings.
+   * Is isolated logically (good for experiments).
+7.2 Channels
+   * Each channel:
+   * Uses one primary avatar (optionally more).
+   * Has its own:
+   * Script style.
+   * Posting schedule.
+   * Platforms.
+   * Branding.
+7.3 Scaling strategy
+   * You can:
+   * Run multiple channels in one workspace.
+   * Or separate them into different workspaces (e.g., “Science Suite”, “Politics Suite”).
+   * Hermes can:
+   * Schedule content generation per channel.
+   * Track which channels perform best (via metrics).
+   * Suggest scaling up/down.
+________________
+
+
+8. Frontend (React + Tailwind) – UI layout
+8.1 Main layout
+   * Left sidebar:
+
+      * Workspaces list.
+      * Channels under each workspace.
+      * Global sections:
+      * Dashboard
+      * Avatar Lab
+      * Script Studio
+      * Video Forge
+      * Music Library
+      * Publishing Hub
+      * Metrics
+      * Top bar:
+
+         * Current workspace selector.
+         * Status indicators (GPU usage, queue length).
+         * User/profile/settings.
+         * Main content area:
+
+            * Context‑dependent views (cards, tables, timelines, previews).
+8.2 Key screens
+            * Dashboard:
+            * Today’s scheduled videos.
+            * In‑progress jobs.
+            * Recent metrics.
+            * Avatar Lab:
+            * Avatar grid.
+            * Avatar creation wizard.
+            * Preview + test animation.
+            * Script Studio:
+            * News source config (Reddit subreddits).
+            * Script drafts.
+            * Manual edit panel.
+            * Video Forge:
+            * Pipeline status per Content item.
+            * Preview of avatar video and final video.
+            * Music Library:
+            * Track list (approved/unapproved).
+            * Player.
+            * Generate‑new button.
+            * Publishing Hub:
+            * Platform connections.
+            * Upload history.
+            * Retry controls.
+            * Metrics:
+            * Per‑channel graphs.
+            * Per‑video performance.
+            * Comparison across channels.
+________________
+
+
+9. Hermes Agent’s role
+9.1 Orchestrator responsibilities
+            * Manage pipelines:
+            * Trigger news → script → voice → avatar → video → upload.
+            * Handle retries and fallbacks.
+            * Choose:
+            * Which news items to cover.
+            * Which music track to use.
+            * Which avatar (if multiple).
+            * Enforce rules:
+            * Only approved music.
+            * Only approved avatars.
+            * Maintain logs and reasoning traces (for debugging).
+9.2 LLM usage pattern
+            * Hermes: high‑level planning, validation, decisions.
+            * Free LLMs: content generation (scripts, titles, descriptions, hashtags).
+________________
+
+
+10. Future extensions
+10.1 Account Factory (Phase 3)
+            * Automated:
+            * Email creation.
+            * Social account creation.
+            * Tools:
+            * Playwright/Puppeteer.
+            * Captcha solver.
+            * Phone verification API.
+            * Integrated into:
+            * Workspace → “Account Factory” tab.
+10.2 Advanced metrics & optimization
+            * A/B testing:
+            * Different thumbnails.
+            * Different titles.
+            * Hermes:
+            * Learns which patterns perform best.
+            * Suggests changes to script style, posting times, etc.

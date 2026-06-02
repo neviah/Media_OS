@@ -7,6 +7,10 @@ const Home = () => {
   const [stats, setStats] = React.useState({ workspaces: 0, channels: 0, avatars: 0, videos: 0 });
   const [apiReady, setApiReady] = React.useState(true);
   const [busyStep, setBusyStep] = React.useState('');
+  const [authForm, setAuthForm] = React.useState({
+    apiKey: window.localStorage.getItem('mediaos_api_key') || '',
+    role: window.localStorage.getItem('mediaos_role') || 'admin'
+  });
   const [pipelineForm, setPipelineForm] = React.useState({
     workspace_id: '',
     channel_id: '',
@@ -84,6 +88,19 @@ const Home = () => {
     }
   };
 
+  const saveAuthSettings = () => {
+    window.localStorage.setItem('mediaos_api_key', authForm.apiKey.trim());
+    window.localStorage.setItem('mediaos_role', authForm.role);
+    success('API auth settings saved for this browser.');
+  };
+
+  const clearAuthSettings = () => {
+    window.localStorage.removeItem('mediaos_api_key');
+    window.localStorage.removeItem('mediaos_role');
+    setAuthForm({ apiKey: '', role: 'admin' });
+    info('API auth settings cleared.');
+  };
+
   return (
     <div className="dashboard-root">
       <section className="hero-card reveal-up">
@@ -115,6 +132,46 @@ const Home = () => {
           <span>{apiReady ? 'Animate' : 'Pending'}</span>
           <span>{apiReady ? 'Assemble' : 'Pending'}</span>
           <span>{apiReady ? 'Publish' : 'Pending'}</span>
+        </div>
+      </section>
+
+      <section className="feature-card reveal-up delay-2">
+        <h3>API Auth Settings</h3>
+        <p style={{ marginTop: '0.4rem' }}>Saved locally and sent as x-api-key and x-user-role on API requests.</p>
+
+        <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+          <label>
+            API Key
+            <input
+              className="form-input"
+              type="password"
+              value={authForm.apiKey}
+              onChange={(event) => setAuthForm((previous) => ({ ...previous, apiKey: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+              autoComplete="off"
+              placeholder="Enter MEDIAOS_API_KEY"
+            />
+          </label>
+          <label>
+            Role
+            <select
+              className="form-input"
+              value={authForm.role}
+              onChange={(event) => setAuthForm((previous) => ({ ...previous, role: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="viewer">viewer</option>
+              <option value="editor">editor</option>
+              <option value="admin">admin</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="table-toolbar" style={{ marginTop: '0.9rem' }}>
+          <div className="toolbar-group">
+            <button className="tiny-button" type="button" onClick={saveAuthSettings}>Save Auth</button>
+            <button className="tiny-button" type="button" onClick={clearAuthSettings}>Clear Auth</button>
+          </div>
         </div>
       </section>
 

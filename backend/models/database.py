@@ -239,3 +239,17 @@ class SocialCredential(Base):
 
     workspace = relationship("Workspace", back_populates="social_credentials")
     channel = relationship("Channel", back_populates="social_credentials")
+    audit_events = relationship("SocialCredentialAudit", back_populates="credential", cascade="all, delete-orphan")
+
+
+class SocialCredentialAudit(Base):
+    __tablename__ = 'social_credential_audit'
+
+    id = Column(Integer, primary_key=True, index=True)
+    credential_id = Column(Integer, ForeignKey('social_credentials.id'), nullable=False)
+    action = Column(String, nullable=False)  # created, updated, oauth_start, oauth_callback, deleted, rotated
+    actor = Column(String, nullable=False, default='system')
+    details = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    credential = relationship("SocialCredential", back_populates="audit_events")

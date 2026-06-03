@@ -66,6 +66,13 @@ const Home = () => {
     account_hint: ''
   });
 
+  const socialDefaultScopes = React.useMemo(() => ({
+    youtube: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly',
+    tiktok: 'user.info.basic video.publish',
+    instagram: 'user_profile user_media',
+    x: 'tweet.read tweet.write users.read offline.access'
+  }), []);
+
   const parseOptionalId = (value) => {
     if (!value) {
       return null;
@@ -236,6 +243,19 @@ const Home = () => {
       return previous;
     });
   }, [socialChannelOptions]);
+
+  React.useEffect(() => {
+    setSocialForm((previous) => {
+      const desiredScopes = socialDefaultScopes[previous.platform] || previous.scopes;
+      if (previous.scopes === desiredScopes) {
+        return previous;
+      }
+      return {
+        ...previous,
+        scopes: desiredScopes
+      };
+    });
+  }, [socialDefaultScopes, socialForm.platform]);
 
   const runPipelineStep = async (label, path, payload) => {
     setBusyStep(label);
@@ -447,10 +467,6 @@ const Home = () => {
   const startOAuthConnection = async () => {
     if (!socialForm.workspace_id) {
       showError('Select a workspace before starting social OAuth.');
-      return;
-    }
-    if (socialForm.platform !== 'youtube') {
-      showError('Current OAuth flow supports YouTube first.');
       return;
     }
     if (!socialForm.client_id.trim() || !socialForm.client_secret.trim() || !socialForm.redirect_uri.trim()) {
@@ -782,6 +798,9 @@ const Home = () => {
               style={{ marginTop: '0.35rem' }}
             >
               <option value="youtube">youtube</option>
+              <option value="tiktok">tiktok</option>
+              <option value="instagram">instagram</option>
+              <option value="x">x</option>
             </select>
           </label>
           <label>

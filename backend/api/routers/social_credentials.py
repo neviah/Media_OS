@@ -1,14 +1,16 @@
+import base64
+import hashlib
 import secrets
-from datetime import datetime
-from typing import List, Optional
+from datetime import datetime, UTC
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.models.database import Channel, SocialCredential, Workspace
+from backend.models.database import Channel, SocialCredential, SocialCredentialAudit, Workspace
 from backend.schemas.social_credential import (
     OAuthCallbackRequest,
     OAuthStartRequest,
@@ -20,15 +22,72 @@ from backend.services.credential_vault_service import CredentialVaultService
 
 router = APIRouter()
 
-YOUTUBE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-YOUTUBE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-DEFAULT_SCOPES = {
-    "youtube": [
-        "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.readonly",
-    ]
+PLATFORM_OAUTH_CONFIG: Dict[str, Dict[str, Any]] = {
+    "youtube": {
+        "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "default_scopes": [
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+        ],
+        "auth_params": {
+            "access_type": "offline",
+            "include_granted_scopes": "true",
+            "prompt": "consent",
+        },
+        "use_pkce": False,
+    },
+    "tiktok": {
+        "authorization_url": "https://www.tiktok.com/v2/auth/authorize/",
+        "token_url": "https://open.tiktokapis.com/v2/oauth/token/",
+        "default_scopes": ["user.info.basic", "video.publish"],
+        "auth_params": {},
+        "use_pkce": True,
+    },
+    "instagram": {
+        "authorization_url": "https://api.instagram.com/oauth/authorize",
+        "token_url": "https://api.instagram.com/oauth/access_token",
+        "default_scopes": ["user_profile", "user_media"],
+        "auth_params": {},
+        "use_pkce": False,
+    },
+    "x": {
+        "authorization_url": "https://twitter.com/i/oauth2/authorize",
+        "token_url": "https://api.twitter.com/2/oauth2/token",
+        "default_scopes": ["tweet.read", "tweet.write", "users.read", "offline.access"],
+        "auth_params": {},
+        "use_pkce": True,
+    },
 }
-SUPPORTED_OAUTH_PLATFORMS = {"youtube"}
+
+SUPPORTED_OAUTH_PLATFORMS = set(PLATFORM_OAUTH_CONFIG.keys())
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _audit_actor(request: Optional[Request]) -> str:
+    if request is None:
+        return "system"
+    role = request.headers.get("x-user-role", "unknown").strip().lower()
+    return f"api:{role or 'unknown'}"
+
+
+def _create_audit_event(
+    db: Session,
+    credential: SocialCredential,
+    action: str,
+    actor: str,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    event = SocialCredentialAudit(
+        credential_id=credential.id,
+        action=action,
+        actor=actor,
+        details=str(details or {}),
+    )
+    db.add(event)
 
 
 def _scopes_to_string(scopes: Optional[List[str]]) -> str:
@@ -73,6 +132,7 @@ def _get_or_create_credential(db: Session, workspace_id: int, channel_id: Option
             is_connected=False,
         )
         db.add(credential)
+        db.flush()
     return credential
 
 
@@ -99,6 +159,52 @@ def _to_status(credential: SocialCredential, vault: CredentialVaultService) -> S
     )
 
 
+def _pkce_pair() -> Dict[str, str]:
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest()).decode("utf-8").rstrip("=")
+    return {"verifier": verifier, "challenge": challenge}
+
+
+def _build_authorization_url(platform: str, payload: OAuthStartRequest, state: str, scope_string: str, pkce: Optional[Dict[str, str]] = None) -> str:
+    config = PLATFORM_OAUTH_CONFIG[platform]
+    query = {
+        "client_id": payload.client_id,
+        "redirect_uri": payload.redirect_uri,
+        "response_type": "code",
+        "scope": scope_string,
+        "state": state,
+        **config.get("auth_params", {}),
+    }
+    if payload.login_hint:
+        query["login_hint"] = payload.login_hint
+    if pkce:
+        query["code_challenge"] = pkce["challenge"]
+        query["code_challenge_method"] = "S256"
+    return f"{config['authorization_url']}?{urlencode(query)}"
+
+
+def _token_exchange_request_body(platform: str, code: str, client_id: str, client_secret: str, redirect_uri: str, code_verifier: Optional[str]) -> Dict[str, str]:
+    if platform == "instagram":
+        return {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect_uri,
+            "code": code,
+        }
+
+    body = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
+    if code_verifier:
+        body["code_verifier"] = code_verifier
+    return body
+
+
 @router.get("/", response_model=List[SocialCredentialStatusResponse])
 def list_social_credentials(
     workspace_id: Optional[int] = Query(default=None),
@@ -120,8 +226,33 @@ def list_social_credentials(
     return [_to_status(item, vault) for item in credentials]
 
 
+@router.get("/{credential_id}/audit")
+def list_social_credential_audit(credential_id: int, db: Session = Depends(get_db)):
+    credential = db.query(SocialCredential).filter(SocialCredential.id == credential_id).first()
+    if credential is None:
+        raise HTTPException(status_code=404, detail="Social credential not found")
+
+    events = (
+        db.query(SocialCredentialAudit)
+        .filter(SocialCredentialAudit.credential_id == credential_id)
+        .order_by(SocialCredentialAudit.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    return [
+        {
+            "id": event.id,
+            "action": event.action,
+            "actor": event.actor,
+            "details": event.details,
+            "created_at": event.created_at,
+        }
+        for event in events
+    ]
+
+
 @router.post("/secrets", response_model=SocialCredentialStatusResponse, status_code=status.HTTP_201_CREATED)
-def upsert_social_secret(payload: SocialCredentialSecretUpsert, db: Session = Depends(get_db)):
+def upsert_social_secret(payload: SocialCredentialSecretUpsert, db: Session = Depends(get_db), request: Request = None):
     platform = payload.platform.strip().lower()
     if not payload.secret_payload:
         raise HTTPException(status_code=400, detail="secret_payload must not be empty")
@@ -139,12 +270,27 @@ def upsert_social_secret(payload: SocialCredentialSecretUpsert, db: Session = De
         {
             "kind": "manual-secret",
             "secret_payload": payload.secret_payload,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": _utcnow().isoformat(),
         }
     )
-    credential.encryption_version = "fernet-v1"
+    credential.encryption_version = f"fernet-v1:{vault.key_id}"
     credential.is_connected = True
-    credential.connected_at = datetime.utcnow()
+    credential.connected_at = _utcnow()
+
+    _create_audit_event(
+        db,
+        credential,
+        "updated",
+        _audit_actor(request),
+        {
+            "platform": platform,
+            "scope": {
+                "workspace_id": payload.workspace_id,
+                "channel_id": payload.channel_id,
+            },
+            "encryption_version": credential.encryption_version,
+        },
+    )
 
     db.commit()
     db.refresh(credential)
@@ -152,14 +298,14 @@ def upsert_social_secret(payload: SocialCredentialSecretUpsert, db: Session = De
 
 
 @router.post("/oauth/start", response_model=OAuthStartResponse)
-def start_oauth(payload: OAuthStartRequest, db: Session = Depends(get_db)):
+def start_oauth(payload: OAuthStartRequest, db: Session = Depends(get_db), request: Request = None):
     platform = payload.platform.strip().lower()
     if platform not in SUPPORTED_OAUTH_PLATFORMS:
         raise HTTPException(status_code=400, detail=f"OAuth start not supported for platform: {platform}")
 
     _ensure_scope_exists(db, payload.workspace_id, payload.channel_id)
 
-    scopes = payload.scopes or DEFAULT_SCOPES[platform]
+    scopes = payload.scopes or PLATFORM_OAUTH_CONFIG[platform]["default_scopes"]
     scope_string = _scopes_to_string(scopes)
     state = secrets.token_urlsafe(24)
 
@@ -168,49 +314,57 @@ def start_oauth(payload: OAuthStartRequest, db: Session = Depends(get_db)):
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    pkce = _pkce_pair() if PLATFORM_OAUTH_CONFIG[platform].get("use_pkce") else None
+
     credential = _get_or_create_credential(db, payload.workspace_id, payload.channel_id, platform)
     credential.oauth_state = state
     credential.is_connected = False
     credential.scopes = scope_string
     credential.provider_account_hint = payload.login_hint
-    credential.encryption_version = "fernet-v1"
+    credential.encryption_version = f"fernet-v1:{vault.key_id}"
     credential.encrypted_payload = vault.encrypt_dict(
         {
             "kind": "oauth-config",
+            "platform": platform,
             "oauth_client_id": payload.client_id,
             "oauth_client_secret": payload.client_secret,
             "redirect_uri": payload.redirect_uri,
             "login_hint": payload.login_hint,
             "scopes": scopes,
-            "updated_at": datetime.utcnow().isoformat(),
+            "pkce_verifier": pkce["verifier"] if pkce else None,
+            "updated_at": _utcnow().isoformat(),
         }
     )
 
-    query = {
-        "client_id": payload.client_id,
-        "redirect_uri": payload.redirect_uri,
-        "response_type": "code",
-        "scope": scope_string,
-        "access_type": "offline",
-        "include_granted_scopes": "true",
-        "prompt": "consent",
-        "state": state,
-    }
-    if payload.login_hint:
-        query["login_hint"] = payload.login_hint
+    authorization_url = _build_authorization_url(platform, payload, state, scope_string, pkce)
+
+    _create_audit_event(
+        db,
+        credential,
+        "oauth_start",
+        _audit_actor(request),
+        {
+            "platform": platform,
+            "scope": {
+                "workspace_id": payload.workspace_id,
+                "channel_id": payload.channel_id,
+            },
+            "scopes": scopes,
+        },
+    )
 
     db.commit()
     db.refresh(credential)
 
     return OAuthStartResponse(
-        authorization_url=f"{YOUTUBE_AUTH_URL}?{urlencode(query)}",
+        authorization_url=authorization_url,
         state=state,
         platform=platform,
     )
 
 
 @router.post("/oauth/callback", response_model=SocialCredentialStatusResponse)
-def complete_oauth(payload: OAuthCallbackRequest, db: Session = Depends(get_db)):
+def complete_oauth(payload: OAuthCallbackRequest, db: Session = Depends(get_db), request: Request = None):
     platform = payload.platform.strip().lower()
     if platform not in SUPPORTED_OAUTH_PLATFORMS:
         raise HTTPException(status_code=400, detail=f"OAuth callback not supported for platform: {platform}")
@@ -245,20 +399,23 @@ def complete_oauth(payload: OAuthCallbackRequest, db: Session = Depends(get_db))
     client_id = decrypted_payload.get("oauth_client_id")
     client_secret = decrypted_payload.get("oauth_client_secret")
     redirect_uri = decrypted_payload.get("redirect_uri")
+    code_verifier = decrypted_payload.get("pkce_verifier")
 
     if not client_id or not client_secret or not redirect_uri:
         raise HTTPException(status_code=400, detail="OAuth configuration is incomplete")
 
-    token_request_body = {
-        "code": payload.code,
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "redirect_uri": redirect_uri,
-        "grant_type": "authorization_code",
-    }
+    token_request_body = _token_exchange_request_body(
+        platform=platform,
+        code=payload.code,
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+    )
 
+    token_url = PLATFORM_OAUTH_CONFIG[platform]["token_url"]
     try:
-        token_response = httpx.post(YOUTUBE_TOKEN_URL, data=token_request_body, timeout=20)
+        token_response = httpx.post(token_url, data=token_request_body, timeout=20)
         token_response.raise_for_status()
         token_data = token_response.json()
     except httpx.HTTPError as exc:
@@ -271,9 +428,11 @@ def complete_oauth(payload: OAuthCallbackRequest, db: Session = Depends(get_db))
         except ValueError:
             existing_payload = {}
 
+    token_scope = token_data.get("scope") or credential.scopes
     credential.encrypted_payload = vault.encrypt_dict(
         {
             "kind": "oauth-tokens",
+            "platform": platform,
             "oauth_client_id": client_id,
             "oauth_client_secret": client_secret,
             "redirect_uri": redirect_uri,
@@ -282,19 +441,93 @@ def complete_oauth(payload: OAuthCallbackRequest, db: Session = Depends(get_db))
                 "refresh_token": token_data.get("refresh_token")
                 or existing_payload.get("tokens", {}).get("refresh_token"),
             },
-            "updated_at": datetime.utcnow().isoformat(),
+            "token_received_at": _utcnow().isoformat(),
+            "updated_at": _utcnow().isoformat(),
         }
     )
     credential.oauth_state = None
-    credential.scopes = token_data.get("scope") or credential.scopes
+    credential.scopes = token_scope
     credential.provider_account_hint = payload.account_hint or credential.provider_account_hint
+    credential.encryption_version = f"fernet-v1:{vault.key_id}"
     credential.is_connected = True
-    credential.connected_at = datetime.utcnow()
+    credential.connected_at = _utcnow()
+
+    _create_audit_event(
+        db,
+        credential,
+        "oauth_callback",
+        _audit_actor(request),
+        {
+            "platform": platform,
+            "has_refresh_token": bool(token_data.get("refresh_token") or existing_payload.get("tokens", {}).get("refresh_token")),
+            "scope": token_scope,
+        },
+    )
 
     db.commit()
     db.refresh(credential)
 
     return _to_status(credential, vault)
+
+
+@router.post("/rotate-encryption")
+def rotate_social_credential_encryption(
+    workspace_id: int = Query(...),
+    channel_id: Optional[int] = Query(default=None),
+    platform: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    _ensure_scope_exists(db, workspace_id, channel_id)
+
+    try:
+        vault = CredentialVaultService()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    query = db.query(SocialCredential).filter(SocialCredential.workspace_id == workspace_id)
+    if channel_id is not None:
+        query = query.filter(SocialCredential.channel_id == channel_id)
+    if platform:
+        query = query.filter(SocialCredential.platform == platform.strip().lower())
+
+    credentials = query.all()
+    rotated = 0
+    skipped = 0
+
+    for credential in credentials:
+        if not credential.encrypted_payload:
+            skipped += 1
+            continue
+        try:
+            payload = vault.decrypt_dict(credential.encrypted_payload)
+        except ValueError:
+            skipped += 1
+            continue
+
+        credential.encrypted_payload = vault.encrypt_dict(payload)
+        credential.encryption_version = f"fernet-v1:{vault.key_id}"
+        credential.updated_at = _utcnow()
+        rotated += 1
+
+        _create_audit_event(
+            db,
+            credential,
+            "rotated",
+            _audit_actor(request),
+            {
+                "platform": credential.platform,
+                "encryption_version": credential.encryption_version,
+            },
+        )
+
+    db.commit()
+
+    return {
+        "rotated": rotated,
+        "skipped": skipped,
+        "key_id": vault.key_id,
+    }
 
 
 @router.delete("/{platform}", status_code=status.HTTP_204_NO_CONTENT)
@@ -303,6 +536,7 @@ def delete_social_credential(
     workspace_id: int = Query(...),
     channel_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     normalized_platform = platform.strip().lower()
     credential = (
@@ -316,6 +550,17 @@ def delete_social_credential(
     )
     if credential is None:
         raise HTTPException(status_code=404, detail="Social credential not found")
+
+    _create_audit_event(
+        db,
+        credential,
+        "deleted",
+        _audit_actor(request),
+        {
+            "platform": normalized_platform,
+            "scope": {"workspace_id": workspace_id, "channel_id": channel_id},
+        },
+    )
 
     db.delete(credential)
     db.commit()

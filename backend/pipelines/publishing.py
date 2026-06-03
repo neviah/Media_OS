@@ -69,26 +69,30 @@ class PublishingPipeline:
                     title=metadata['title'],
                     description=metadata['description'],
                     tags=metadata.get('hashtags', ''),
-                    privacy='private'  # Could be made configurable
+                    privacy='private',  # Could be made configurable
+                    channel_id=video.channel_id,
                 )
             elif platform.lower() == 'tiktok':
                 result = publishing_service.upload_tiktok(
                     workspace_id=video.workspace_id,
                     video_path=video.final_video_path,
                     title=metadata['title'],
-                    privacy='private'  # Could be made configurable
+                    privacy='private',  # Could be made configurable
+                    channel_id=video.channel_id,
                 )
             elif platform.lower() == 'instagram':
                 result = publishing_service.upload_instagram(
                     workspace_id=video.workspace_id,
                     video_path=video.final_video_path,
-                    caption=metadata['description']  # Using description as caption for Instagram
+                    caption=metadata['description'],  # Using description as caption for Instagram
+                    channel_id=video.channel_id,
                 )
             elif platform.lower() == 'x':
                 result = publishing_service.upload_x(
                     workspace_id=video.workspace_id,
                     video_path=video.final_video_path,
-                    title=metadata['title']  # Using title as the tweet text
+                    title=metadata['title'],  # Using title as the tweet text
+                    channel_id=video.channel_id,
                 )
             else:
                 logger.error(f"Unsupported platform: {platform}")
@@ -116,7 +120,11 @@ class PublishingPipeline:
                     post_url=None,
                     status='failed',
                     published_at=None,
-                    error_message=result.get('error', 'Unknown error') if result else 'Publishing service returned no result'
+                    error_message=(
+                        f"{result.get('error_code', 'publish_error')}: {result.get('error', 'Unknown error')}"
+                        if result
+                        else 'Publishing service returned no result'
+                    )
                 )
             
             self.db.add(publish_log)

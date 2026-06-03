@@ -8,6 +8,7 @@ import uvicorn
 from backend.api.main import api_router
 from backend.database import engine
 from backend.models.database import Base
+from backend.services.publish_job_service import publish_job_service
 from backend.services.token_lifecycle_service import token_lifecycle_service
 
 app = FastAPI(title="Media Control Center API")
@@ -60,11 +61,13 @@ async def auth_middleware(request: Request, call_next):
 async def startup_event():
     # Ensure local SQLite tables exist for first-run development.
     Base.metadata.create_all(bind=engine)
+    publish_job_service.start()
     token_lifecycle_service.start()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    publish_job_service.stop()
     token_lifecycle_service.stop()
 
 

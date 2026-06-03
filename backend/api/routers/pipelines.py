@@ -1,8 +1,11 @@
 from typing import List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from backend.database import get_db
+from backend.models.database import Video
 from backend.services.publish_job_service import publish_job_service
 
 router = APIRouter()
@@ -130,10 +133,16 @@ def trigger_publish(payload: PublishRequest):
 
 
 @router.post('/publish-async')
-def trigger_publish_async(payload: PublishAsyncRequest):
+def trigger_publish_async(payload: PublishAsyncRequest, db: Session = Depends(get_db)):
+    video = db.query(Video).filter(Video.id == payload.video_id).first()
+    if video is None:
+        raise HTTPException(status_code=404, detail='Video not found')
+
     job = publish_job_service.enqueue(
         video_id=payload.video_id,
         platform=payload.platform,
+        workspace_id=video.workspace_id,
+        channel_id=video.channel_id,
         schedule_time=payload.schedule_time,
         idempotency_key=payload.idempotency_key,
         max_attempts=payload.max_attempts,

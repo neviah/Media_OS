@@ -24,6 +24,7 @@ class Workspace(Base):
     audios = relationship("Audio", back_populates="workspace")
     videos = relationship("Video", back_populates="workspace")
     publish_logs = relationship("PublishLog", back_populates="workspace")
+    publish_jobs = relationship("PublishJob", back_populates="workspace")
     metrics = relationship("Metrics", back_populates="workspace")
     social_credentials = relationship("SocialCredential", back_populates="workspace")
 
@@ -69,6 +70,7 @@ class Channel(Base):
     audios = relationship("Audio", back_populates="channel")
     videos = relationship("Video", back_populates="channel")
     publish_logs = relationship("PublishLog", back_populates="channel")
+    publish_jobs = relationship("PublishJob", back_populates="channel")
     metrics = relationship("Metrics", back_populates="channel")
     social_credentials = relationship("SocialCredential", back_populates="channel")
 
@@ -173,6 +175,7 @@ class Video(Base):
     audio = relationship("Audio", back_populates="videos")
     music = relationship("Music")
     publish_logs = relationship("PublishLog", back_populates="video")
+    publish_jobs = relationship("PublishJob", back_populates="video")
     metrics = relationship("Metrics", back_populates="video")
 
 class PublishLog(Base):
@@ -253,3 +256,35 @@ class SocialCredentialAudit(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     credential = relationship("SocialCredential", back_populates="audit_events")
+
+
+class PublishJob(Base):
+    __tablename__ = 'publish_jobs'
+    __table_args__ = (
+        UniqueConstraint('idempotency_key', name='uq_publish_jobs_idempotency_key'),
+    )
+
+    id = Column(String, primary_key=True)
+    workspace_id = Column(Integer, ForeignKey('workspaces.id'), nullable=False)
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=False)
+    video_id = Column(Integer, ForeignKey('videos.id'), nullable=False)
+    platform = Column(String, nullable=False)
+    schedule_time = Column(Float)
+    idempotency_key = Column(String)
+    status = Column(String, default='queued')  # queued, running, retrying, succeeded, failed
+    attempt = Column(Integer, default=0)
+    max_attempts = Column(Integer, default=3)
+    progress = Column(Integer, default=0)
+    detail = Column(Text, default='queued')
+    publish_log_id = Column(Integer, ForeignKey('publish_logs.id'))
+    error_message = Column(Text)
+    payload_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+
+    workspace = relationship("Workspace", back_populates="publish_jobs")
+    channel = relationship("Channel", back_populates="publish_jobs")
+    video = relationship("Video", back_populates="publish_jobs")
+    publish_log = relationship("PublishLog")

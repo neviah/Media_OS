@@ -1,143 +1,313 @@
+from __future__ import annotations
+
+import json
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, UTC
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, UTC, timedelta
 from typing import Dict, Optional
 
-from backend.pipelines.publishing import PublishingPipeline
+from backend.database import SessionLocal
+from backend.models.database import PublishJob as PublishJobRecord
 
 
-def _utcnow_iso() -> str:
-    return datetime.now(UTC).isoformat()
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass
-class PublishJob:
+class PublishJobSnapshot:
     id: str
     video_id: int
     platform: str
-    schedule_time: Optional[float] = None
-    idempotency_key: Optional[str] = None
-    status: str = "queued"  # queued, running, retrying, succeeded, failed
+    status: str = "queued"
     attempt: int = 0
     max_attempts: int = 3
     progress: int = 0
     detail: str = "queued"
     publish_log_id: Optional[int] = None
     error: Optional[str] = None
-    created_at: str = field(default_factory=_utcnow_iso)
-    updated_at: str = field(default_factory=_utcnow_iso)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    schedule_time: Optional[float] = None
+    idempotency_key: Optional[str] = None
+    workspace_id: Optional[int] = None
+    channel_id: Optional[int] = None
 
 
 class PublishJobService:
     def __init__(self) -> None:
-        self._jobs: Dict[str, PublishJob] = {}
-        self._idempotency_index: Dict[str, str] = {}
         self._lock = threading.Lock()
+        self._running = False
+        self._worker_thread: Optional[threading.Thread] = None
+        self._last_cycle_started_at: Optional[str] = None
+        self._last_cycle_summary: Dict[str, int] = {"queued": 0, "running": 0, "retrying": 0, "succeeded": 0, "failed": 0}
+
+    def _snapshot_from_record(self, record: PublishJobRecord) -> PublishJobSnapshot:
+        return PublishJobSnapshot(
+            id=record.id,
+            video_id=record.video_id,
+            platform=record.platform,
+            status=record.status,
+            attempt=record.attempt or 0,
+            max_attempts=record.max_attempts or 3,
+            progress=record.progress or 0,
+            detail=record.detail or 'queued',
+            publish_log_id=record.publish_log_id,
+            error=record.error_message,
+            created_at=record.created_at.isoformat() if record.created_at else None,
+            updated_at=record.updated_at.isoformat() if record.updated_at else None,
+            schedule_time=record.schedule_time,
+            idempotency_key=record.idempotency_key,
+            workspace_id=record.workspace_id,
+            channel_id=record.channel_id,
+        )
+
+    def _get_db(self):
+        return SessionLocal()
 
     def enqueue(
         self,
         *,
         video_id: int,
         platform: str,
+        workspace_id: int,
+        channel_id: int,
         schedule_time: Optional[float] = None,
         idempotency_key: Optional[str] = None,
         max_attempts: int = 3,
-    ) -> PublishJob:
-        with self._lock:
-            if idempotency_key and idempotency_key in self._idempotency_index:
-                existing_job = self._jobs[self._idempotency_index[idempotency_key]]
-                return existing_job
+    ) -> PublishJobSnapshot:
+        if not workspace_id or not channel_id:
+            raise ValueError('workspace_id and channel_id are required for persistent publish jobs')
 
-            job = PublishJob(
-                id=str(uuid.uuid4()),
+        db = self._get_db()
+        try:
+            if idempotency_key:
+                existing = db.query(PublishJobRecord).filter(PublishJobRecord.idempotency_key == idempotency_key).first()
+                if existing:
+                    return self._snapshot_from_record(existing)
+
+            job_id = str(uuid.uuid4())
+            record = PublishJobRecord(
+                id=job_id,
+                workspace_id=workspace_id,
+                channel_id=channel_id,
                 video_id=video_id,
                 platform=platform,
                 schedule_time=schedule_time,
                 idempotency_key=idempotency_key,
+                status='queued',
+                attempt=0,
                 max_attempts=max(1, max_attempts),
+                progress=0,
+                detail='queued',
+                payload_json=json.dumps({
+                    'video_id': video_id,
+                    'platform': platform,
+                    'schedule_time': schedule_time,
+                    'idempotency_key': idempotency_key,
+                }),
             )
-            self._jobs[job.id] = job
-            if idempotency_key:
-                self._idempotency_index[idempotency_key] = job.id
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            return self._snapshot_from_record(record)
+        finally:
+            db.close()
 
-        worker = threading.Thread(target=self._run_job, args=(job.id,), daemon=True)
-        worker.start()
-        return job
+    def get(self, job_id: str) -> Optional[PublishJobSnapshot]:
+        db = self._get_db()
+        try:
+            record = db.query(PublishJobRecord).filter(PublishJobRecord.id == job_id).first()
+            if record is None:
+                return None
+            return self._snapshot_from_record(record)
+        finally:
+            db.close()
 
-    def get(self, job_id: str) -> Optional[PublishJob]:
-        with self._lock:
-            return self._jobs.get(job_id)
+    def _set_state(self, db, record: PublishJobRecord, *, status: str, progress: int, detail: str, error: Optional[str] = None) -> None:
+        record.status = status
+        record.progress = progress
+        record.detail = detail
+        record.error_message = error
+        record.updated_at = _utcnow()
+        if status == 'running' and record.started_at is None:
+            record.started_at = _utcnow()
+        if status in {'succeeded', 'failed'}:
+            record.completed_at = _utcnow()
 
-    def _set_state(self, job: PublishJob, *, status: str, progress: int, detail: str, error: Optional[str] = None) -> None:
-        with self._lock:
-            job.status = status
-            job.progress = progress
-            job.detail = detail
-            job.error = error
-            job.updated_at = _utcnow_iso()
+    def _recover_stale_jobs(self, db) -> None:
+        stale_seconds = int(__import__('os').getenv('MEDIAOS_PUBLISH_JOB_STALE_SECONDS', '600'))
+        cutoff = _utcnow() - timedelta(seconds=stale_seconds)
+        stale_jobs = db.query(PublishJobRecord).filter(
+            PublishJobRecord.status.in_(['running', 'retrying'])
+        ).all()
+        for record in stale_jobs:
+            if record.updated_at and record.updated_at >= cutoff:
+                continue
+            record.status = 'queued'
+            record.progress = min(record.progress or 0, 10)
+            record.detail = 'recovered after restart'
+            record.updated_at = _utcnow()
+        db.commit()
 
-    def _run_job(self, job_id: str) -> None:
-        job = self.get(job_id)
-        if not job:
-            return
+    def _find_next_job(self, db) -> Optional[PublishJobRecord]:
+        now_ts = time.time()
+        return (
+            db.query(PublishJobRecord)
+            .filter(
+                PublishJobRecord.status.in_(['queued', 'retrying']),
+                ((PublishJobRecord.schedule_time.is_(None)) | (PublishJobRecord.schedule_time <= now_ts)),
+            )
+            .order_by(PublishJobRecord.created_at.asc())
+            .first()
+        )
 
-        self._set_state(job, status="running", progress=10, detail="starting publish pipeline")
+    def _process_record(self, record_id: str) -> None:
+        db = self._get_db()
+        try:
+            record = db.query(PublishJobRecord).filter(PublishJobRecord.id == record_id).first()
+            if record is None:
+                return
 
-        while job.attempt < job.max_attempts:
-            job.attempt += 1
-            try:
-                self._set_state(
-                    job,
-                    status="running" if job.attempt == 1 else "retrying",
-                    progress=min(80, 20 + job.attempt * 20),
-                    detail=f"publish attempt {job.attempt}/{job.max_attempts}",
-                )
+            from backend.pipelines.publishing import PublishingPipeline
 
-                pipeline = PublishingPipeline()
-                result = pipeline.publish_video(
-                    video_id=job.video_id,
-                    platform=job.platform,
-                    schedule_time=job.schedule_time,
-                )
+            pipeline = PublishingPipeline()
+            self._set_state(db, record, status='running', progress=10, detail='starting publish pipeline')
+            db.commit()
 
-                if result is not None and getattr(result, "id", None) is not None and getattr(result, "status", "") != "failed":
-                    with self._lock:
-                        job.publish_log_id = result.id
-                    self._set_state(job, status="succeeded", progress=100, detail="publish succeeded")
+            while record.attempt < (record.max_attempts or 3):
+                record.attempt += 1
+                db.commit()
+                try:
+                    self._set_state(
+                        db,
+                        record,
+                        status='running' if record.attempt == 1 else 'retrying',
+                        progress=min(80, 20 + record.attempt * 20),
+                        detail=f'publish attempt {record.attempt}/{record.max_attempts}',
+                    )
+                    db.commit()
+
+                    result = pipeline.publish_video(
+                        video_id=record.video_id,
+                        platform=record.platform,
+                        schedule_time=record.schedule_time,
+                    )
+
+                    success = bool(result and getattr(result, 'status', '') not in {'failed'} and getattr(result, 'id', None) is not None)
+                    if success:
+                        record.publish_log_id = getattr(result, 'id', None)
+                        self._set_state(db, record, status='succeeded', progress=100, detail='publish succeeded', error=None)
+                        db.commit()
+                        return
+
+                    error_message = 'publish pipeline returned failed result'
+                    if result is not None and getattr(result, 'error_message', None):
+                        error_message = result.error_message
+
+                    if record.attempt < record.max_attempts:
+                        self._set_state(
+                            db,
+                            record,
+                            status='retrying',
+                            progress=min(90, 30 + record.attempt * 20),
+                            detail=f'retrying after failure: {error_message}',
+                            error=error_message,
+                        )
+                        db.commit()
+                        time.sleep(min(6, record.attempt * 2))
+                        continue
+
+                    self._set_state(db, record, status='failed', progress=100, detail='publish failed', error=error_message)
+                    db.commit()
                     return
+                except Exception as exc:
+                    if record.attempt < record.max_attempts:
+                        self._set_state(
+                            db,
+                            record,
+                            status='retrying',
+                            progress=min(90, 30 + record.attempt * 20),
+                            detail=f'retrying after exception: {exc}',
+                            error=str(exc),
+                        )
+                        db.commit()
+                        time.sleep(min(6, record.attempt * 2))
+                        continue
+                    self._set_state(db, record, status='failed', progress=100, detail='publish crashed', error=str(exc))
+                    db.commit()
+                    return
+        finally:
+            db.close()
 
-                failure_message = "publish pipeline returned failed result"
-                if result is not None and getattr(result, "error_message", None):
-                    failure_message = result.error_message
+    def _worker_loop(self) -> None:
+        db = self._get_db()
+        try:
+            self._recover_stale_jobs(db)
+        finally:
+            db.close()
 
-                if job.attempt < job.max_attempts:
-                    self._set_state(
-                        job,
-                        status="retrying",
-                        progress=min(90, 30 + job.attempt * 20),
-                        detail=f"retrying after failure: {failure_message}",
-                        error=failure_message,
-                    )
-                    time.sleep(min(6, job.attempt * 2))
+        while self._running:
+            db = self._get_db()
+            try:
+                self._last_cycle_started_at = _utcnow().isoformat()
+                queue_counts = {
+                    'queued': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'queued').count(),
+                    'running': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'running').count(),
+                    'retrying': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'retrying').count(),
+                    'succeeded': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'succeeded').count(),
+                    'failed': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'failed').count(),
+                }
+                self._last_cycle_summary = queue_counts
+
+                next_job = self._find_next_job(db)
+                if next_job is not None:
+                    job_id = next_job.id
+                    db.close()
+                    self._process_record(job_id)
+                    time.sleep(0.2)
                     continue
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
-                self._set_state(job, status="failed", progress=100, detail="publish failed", error=failure_message)
-                return
-            except Exception as exc:
-                if job.attempt < job.max_attempts:
-                    self._set_state(
-                        job,
-                        status="retrying",
-                        progress=min(90, 30 + job.attempt * 20),
-                        detail=f"retrying after exception: {exc}",
-                        error=str(exc),
-                    )
-                    time.sleep(min(6, job.attempt * 2))
-                    continue
-                self._set_state(job, status="failed", progress=100, detail="publish crashed", error=str(exc))
-                return
+            time.sleep(1)
+
+    def start(self) -> None:
+        if self._running:
+            return
+        enabled = __import__('os').getenv('MEDIAOS_PUBLISH_QUEUE_ENABLED', '1') == '1'
+        if not enabled:
+            return
+        self._running = True
+        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker_thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+
+    def status(self) -> Dict[str, object]:
+        db = self._get_db()
+        try:
+            return {
+                'running': self._running,
+                'worker_thread_alive': bool(self._worker_thread and self._worker_thread.is_alive()),
+                'last_cycle_started_at': self._last_cycle_started_at,
+                'last_cycle_summary': self._last_cycle_summary,
+                'counts': {
+                    'queued': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'queued').count(),
+                    'running': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'running').count(),
+                    'retrying': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'retrying').count(),
+                    'succeeded': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'succeeded').count(),
+                    'failed': db.query(PublishJobRecord).filter(PublishJobRecord.status == 'failed').count(),
+                },
+            }
+        finally:
+            db.close()
 
 
 publish_job_service = PublishJobService()

@@ -93,3 +93,28 @@ def test_publish_preflight_route_returns_shape(monkeypatch):
     assert body['ok'] is True
     assert body['video_id'] == 5
     assert body['platform'] == 'youtube'
+
+
+def test_publish_queue_status_route(monkeypatch):
+    app = _load_app_with_auth_disabled()
+
+    import backend.api.routers.system as system_router
+
+    monkeypatch.setattr(
+        system_router.publish_job_service,
+        'status',
+        lambda: {
+            'running': True,
+            'worker_thread_alive': True,
+            'last_cycle_started_at': '2026-06-03T12:00:00+00:00',
+            'last_cycle_summary': {'queued': 1, 'running': 0, 'retrying': 0, 'succeeded': 4, 'failed': 0},
+            'counts': {'queued': 1, 'running': 0, 'retrying': 0, 'succeeded': 4, 'failed': 0},
+        },
+    )
+
+    client = TestClient(app)
+    response = client.get('/api/system/publish-queue-status')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['running'] is True
+    assert body['counts']['queued'] == 1

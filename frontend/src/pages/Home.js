@@ -21,11 +21,14 @@ const Home = () => {
   const [setupBusy, setSetupBusy] = React.useState(false);
   const [socialBusy, setSocialBusy] = React.useState(false);
   const [socialStatuses, setSocialStatuses] = React.useState([]);
+  const [socialAuditBusyId, setSocialAuditBusyId] = React.useState('');
+  const [socialAuditByCredential, setSocialAuditByCredential] = React.useState({});
   const [tokenLifecycle, setTokenLifecycle] = React.useState(null);
   const [tokenLifecycleBusy, setTokenLifecycleBusy] = React.useState(false);
   const [publishPreflight, setPublishPreflight] = React.useState(null);
   const [preflightBusy, setPreflightBusy] = React.useState(false);
   const [publishJob, setPublishJob] = React.useState(null);
+  const [publishQueueStatus, setPublishQueueStatus] = React.useState(null);
 
   const [authForm, setAuthForm] = React.useState({
     apiKey: window.localStorage.getItem('mediaos_api_key') || '',
@@ -170,7 +173,7 @@ const Home = () => {
     };
 
     try {
-      const [entries, workspaces, channels, sources, scripts, audios, videos, music, llm] = await Promise.all([
+      const [entries, workspaces, channels, sources, scripts, audios, videos, music, llm, queueStatus] = await Promise.all([
         Promise.all(Object.entries(endpointMap).map(async ([key, path]) => {
           const data = await apiGet(path);
           return [key, Array.isArray(data) ? data.length : 0];
@@ -182,12 +185,14 @@ const Home = () => {
         apiGet('/api/audios/'),
         apiGet('/api/videos/'),
         apiGet('/api/music/'),
-        apiGet('/api/system/llm-status')
+        apiGet('/api/system/llm-status'),
+        apiGet('/api/system/publish-queue-status')
       ]);
 
       setStats(Object.fromEntries(entries));
       setEntities({ workspaces, channels, sources, scripts, audios, videos, music });
       setLlmStatus(llm);
+      setPublishQueueStatus(queueStatus);
       setApiReady(true);
 
       setPipelineForm((previous) => ({
@@ -661,6 +666,37 @@ const Home = () => {
     }
   };
 
+  const loadSocialAudit = async (credentialId) => {
+    setSocialAuditBusyId(String(credentialId));
+    try {
+      const audit = await apiGet(`/api/social-credentials/${credentialId}/audit`);
+      setSocialAuditByCredential((previous) => ({ ...previous, [credentialId]: Array.isArray(audit) ? audit : [] }));
+    } catch {
+      showError('Unable to load credential audit history.');
+    } finally {
+      setSocialAuditBusyId('');
+    }
+  };
+
+  const rotateCredentialEncryption = async (item) => {
+    setSocialBusy(true);
+    try {
+      const query = new URLSearchParams({
+        workspace_id: String(item.workspace_id),
+        ...(item.channel_id ? { channel_id: String(item.channel_id) } : {}),
+        platform: item.platform
+      }).toString();
+
+      const response = await apiPost(`/api/social-credentials/rotate-encryption?${query}`, {});
+      success(`Rotation complete for ${item.platform}. Rotated ${response.rotated} credential(s).`);
+      await Promise.all([loadSocialStatuses(), loadSocialAudit(item.id)]);
+    } catch {
+      showError(`Failed to rotate encryption for ${item.platform}.`);
+    } finally {
+      setSocialBusy(false);
+    }
+  };
+
   return (
     <div className="dashboard-root">
       <section className="hero-card reveal-up">
@@ -1008,22 +1044,54 @@ const Home = () => {
             <div>No social credentials connected yet.</div>
           ) : (
             socialStatuses.map((item) => (
-              <div key={`${item.platform}-${item.workspace_id}-${item.channel_id || 'workspace'}`}>
-                <strong>{item.platform}</strong>
-                {` | workspace #${item.workspace_id}`}
-                {item.channel_id ? ` | channel #${item.channel_id}` : ' | workspace-level'}
-                {` | ${item.is_connected ? 'connected' : 'pending'}`}
-                {item.account_hint ? ` | ${item.account_hint}` : ''}
-                {item.has_refresh_token ? ' | refresh token saved' : ''}
-                <button
-                  className="tiny-button"
-                  type="button"
-                  style={{ marginLeft: '0.7rem' }}
-                  disabled={socialBusy}
-                  onClick={() => disconnectSocial(item.platform, item.workspace_id, item.channel_id)}
-                >
-                  Disconnect
-                </button>
+              <div key={`${item.platform}-${item.workspace_id}-${item.channel_id || 'workspace'}`} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '0.75rem', background: 'rgba(255,255,255,0.02)' }}>
+                <div>
+                  <strong>{item.platform}</strong>
+                  {` | workspace #${item.workspace_id}`}
+                  {item.channel_id ? ` | channel #${item.channel_id}` : ' | workspace-level'}
+                  {` | ${item.is_connected ? 'connected' : 'pending'}`}
+                  {item.account_hint ? ` | ${item.account_hint}` : ''}
+                  {item.has_refresh_token ? ' | refresh token saved' : ''}
+                </div>
+                <div className="toolbar-group" style={{ marginTop: '0.6rem' }}>
+                  <button
+                    className="tiny-button"
+                    type="button"
+                    disabled={socialBusy || socialAuditBusyId === String(item.id)}
+                    onClick={() => loadSocialAudit(item.id)}
+                  >
+                    {socialAuditBusyId === String(item.id) ? 'Loading Audit...' : 'View Audit'}
+                  </button>
+                  <button
+                    className="tiny-button"
+                    type="button"
+                    disabled={socialBusy}
+                    onClick={() => rotateCredentialEncryption(item)}
+                  >
+                    Rotate Encryption
+                  </button>
+                  <button
+                    className="tiny-button"
+                    type="button"
+                    disabled={socialBusy}
+                    onClick={() => disconnectSocial(item.platform, item.workspace_id, item.channel_id)}
+                  >
+                    Disconnect
+                  </button>
+                </div>
+
+                {Array.isArray(socialAuditByCredential[item.id]) && socialAuditByCredential[item.id].length > 0 ? (
+                  <div className="stage-list" style={{ marginTop: '0.7rem' }}>
+                    {socialAuditByCredential[item.id].map((audit) => (
+                      <div key={audit.id}>
+                        <strong>{audit.action}</strong>
+                        {` | ${audit.actor}`}
+                        {audit.created_at ? ` | ${audit.created_at}` : ''}
+                        {audit.details ? ` | ${audit.details}` : ''}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ))
           )}
@@ -1073,6 +1141,23 @@ const Home = () => {
             </button>
           </div>
         </div>
+      </section>
+
+      <section className="feature-card reveal-up delay-2">
+        <h3>Publish Queue</h3>
+        <p style={{ marginTop: '0.4rem' }}>Persistent queue backed by the database; jobs survive restarts and resume from stored state.</p>
+
+        {publishQueueStatus ? (
+          <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+            <div>Worker: {publishQueueStatus.running ? 'running' : 'stopped'}{publishQueueStatus.worker_thread_alive ? ' (thread alive)' : ''}</div>
+            <div>Last cycle: {publishQueueStatus.last_cycle_started_at || 'not yet'}</div>
+            <div>
+              Queue counts: queued {publishQueueStatus.counts?.queued ?? 0}, running {publishQueueStatus.counts?.running ?? 0}, retrying {publishQueueStatus.counts?.retrying ?? 0}, succeeded {publishQueueStatus.counts?.succeeded ?? 0}, failed {publishQueueStatus.counts?.failed ?? 0}
+            </div>
+          </div>
+        ) : (
+          <p style={{ marginTop: '0.5rem' }}>Publish queue status unavailable.</p>
+        )}
       </section>
 
       <section className="feature-card reveal-up delay-2">

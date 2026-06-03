@@ -115,27 +115,55 @@ def test_pipeline_publish_async_requires_admin(monkeypatch):
     app = _load_app_with_env(auth_enabled='1', api_key='secret')
 
     import backend.api.routers.pipelines as pipeline_router
+    from backend.database import SessionLocal
+    from backend.models.database import Avatar, Channel, Video, Workspace
 
     monkeypatch.setattr(pipeline_router.publish_job_service, 'enqueue', lambda **kwargs: DummyJob())
 
-    client = TestClient(app)
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            workspace = Workspace(name='Async Publish Workspace', description='test')
+            db.add(workspace)
+            db.flush()
 
-    editor_headers = {'x-api-key': 'secret', 'x-user-role': 'editor'}
-    editor_response = client.post(
-        '/api/pipelines/publish-async',
-        json={'video_id': 1, 'platform': 'youtube', 'schedule_time': None, 'idempotency_key': 'idem-123', 'max_attempts': 3},
-        headers=editor_headers,
-    )
-    assert editor_response.status_code == 403
-    assert editor_response.json()['detail'] == 'Admin role required'
+            avatar = Avatar(workspace_id=workspace.id, name='Async Avatar', channel_type='news')
+            db.add(avatar)
+            db.flush()
 
-    admin_headers = {'x-api-key': 'secret', 'x-user-role': 'admin'}
-    admin_response = client.post(
-        '/api/pipelines/publish-async',
-        json={'video_id': 1, 'platform': 'youtube', 'schedule_time': None, 'idempotency_key': 'idem-123', 'max_attempts': 3},
-        headers=admin_headers,
-    )
-    assert admin_response.status_code == 200
-    body = admin_response.json()
-    assert body['success'] is True
-    assert body['job_id'] == 'job-123'
+            channel = Channel(workspace_id=workspace.id, avatar_id=avatar.id, name='Async Channel', is_active=True)
+            db.add(channel)
+            db.flush()
+
+            video = Video(
+                workspace_id=workspace.id,
+                channel_id=channel.id,
+                avatar_id=avatar.id,
+                audio_id=1,
+                final_video_path='videos/async-test.mp4',
+            )
+            db.add(video)
+            db.commit()
+            video_id = video.id
+        finally:
+            db.close()
+
+        editor_headers = {'x-api-key': 'secret', 'x-user-role': 'editor'}
+        editor_response = client.post(
+            '/api/pipelines/publish-async',
+            json={'video_id': video_id, 'platform': 'youtube', 'schedule_time': None, 'idempotency_key': 'idem-123', 'max_attempts': 3},
+            headers=editor_headers,
+        )
+        assert editor_response.status_code == 403
+        assert editor_response.json()['detail'] == 'Admin role required'
+
+        admin_headers = {'x-api-key': 'secret', 'x-user-role': 'admin'}
+        admin_response = client.post(
+            '/api/pipelines/publish-async',
+            json={'video_id': video_id, 'platform': 'youtube', 'schedule_time': None, 'idempotency_key': 'idem-123', 'max_attempts': 3},
+            headers=admin_headers,
+        )
+        assert admin_response.status_code == 200
+        body = admin_response.json()
+        assert body['success'] is True
+        assert body['job_id'] == 'job-123'

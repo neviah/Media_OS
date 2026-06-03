@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from backend.services.llm_service import llm_service
+from backend.services.publish_job_service import publish_job_service
 from backend.services.publish_preflight_service import publish_preflight_service
 from backend.services.token_lifecycle_service import token_lifecycle_service
 
@@ -21,6 +22,11 @@ def token_lifecycle_status():
 def token_refresh_now():
     summary = token_lifecycle_service.run_refresh_cycle(force=True)
     return {'success': True, 'summary': summary}
+
+
+@router.get('/publish-queue-status')
+def publish_queue_status():
+    return publish_job_service.status()
 
 
 @router.get('/publish-preflight')

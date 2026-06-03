@@ -1,5 +1,5 @@
 import React from 'react';
-import { apiGet, apiPost } from '../lib/api';
+import { apiDelete, apiGet, apiPost } from '../lib/api';
 import { useToast } from '../context/ToastContext';
 
 const Home = () => {
@@ -19,6 +19,8 @@ const Home = () => {
   const [apiReady, setApiReady] = React.useState(true);
   const [busyStep, setBusyStep] = React.useState('');
   const [setupBusy, setSetupBusy] = React.useState(false);
+  const [socialBusy, setSocialBusy] = React.useState(false);
+  const [socialStatuses, setSocialStatuses] = React.useState([]);
 
   const [authForm, setAuthForm] = React.useState({
     apiKey: window.localStorage.getItem('mediaos_api_key') || '',
@@ -50,6 +52,20 @@ const Home = () => {
     news_keywords: 'ai,technology'
   });
 
+  const [socialForm, setSocialForm] = React.useState({
+    workspace_id: '',
+    channel_id: '',
+    platform: 'youtube',
+    client_id: '',
+    client_secret: '',
+    redirect_uri: 'http://127.0.0.1:8000/oauth/youtube/callback',
+    login_hint: '',
+    scopes: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly',
+    oauth_code: '',
+    oauth_state: '',
+    account_hint: ''
+  });
+
   const parseOptionalId = (value) => {
     if (!value) {
       return null;
@@ -64,6 +80,13 @@ const Home = () => {
     }
     return entities.channels.filter((item) => String(item.workspace_id) === pipelineForm.workspace_id);
   }, [entities.channels, pipelineForm.workspace_id]);
+
+  const socialChannelOptions = React.useMemo(() => {
+    if (!socialForm.workspace_id) {
+      return entities.channels;
+    }
+    return entities.channels.filter((item) => String(item.workspace_id) === socialForm.workspace_id);
+  }, [entities.channels, socialForm.workspace_id]);
 
   const sourceOptions = React.useMemo(() => {
     if (!pipelineForm.workspace_id) {
@@ -107,6 +130,15 @@ const Home = () => {
     assembly: Boolean(pipelineForm.video_id),
     publish: Boolean(pipelineForm.video_id && pipelineForm.platform)
   }), [pipelineForm]);
+
+  const loadSocialStatuses = React.useCallback(async () => {
+    try {
+      const data = await apiGet('/api/social-credentials/');
+      setSocialStatuses(Array.isArray(data) ? data : []);
+    } catch {
+      setSocialStatuses([]);
+    }
+  }, []);
 
   const loadDashboardState = React.useCallback(async () => {
     const endpointMap = {
@@ -152,10 +184,18 @@ const Home = () => {
         ...previous,
         existing_workspace_id: previous.existing_workspace_id || (workspaces[0] ? String(workspaces[0].id) : '')
       }));
+
+      setSocialForm((previous) => ({
+        ...previous,
+        workspace_id: previous.workspace_id || (workspaces[0] ? String(workspaces[0].id) : ''),
+        channel_id: previous.channel_id || (channels[0] ? String(channels[0].id) : '')
+      }));
+
+      await loadSocialStatuses();
     } catch {
       setApiReady(false);
     }
-  }, []);
+  }, [loadSocialStatuses]);
 
   React.useEffect(() => {
     loadDashboardState();
@@ -187,6 +227,15 @@ const Home = () => {
       return next;
     });
   }, [channelOptions, sourceOptions, scriptOptions, audioOptions, videoOptions, musicOptions]);
+
+  React.useEffect(() => {
+    setSocialForm((previous) => {
+      if (previous.channel_id && !socialChannelOptions.some((item) => String(item.id) === previous.channel_id)) {
+        return { ...previous, channel_id: '' };
+      }
+      return previous;
+    });
+  }, [socialChannelOptions]);
 
   const runPipelineStep = async (label, path, payload) => {
     setBusyStep(label);
@@ -392,6 +441,96 @@ const Home = () => {
       showError('Guided setup failed. Check form values and auth role, then retry.');
     } finally {
       setSetupBusy(false);
+    }
+  };
+
+  const startOAuthConnection = async () => {
+    if (!socialForm.workspace_id) {
+      showError('Select a workspace before starting social OAuth.');
+      return;
+    }
+    if (socialForm.platform !== 'youtube') {
+      showError('Current OAuth flow supports YouTube first.');
+      return;
+    }
+    if (!socialForm.client_id.trim() || !socialForm.client_secret.trim() || !socialForm.redirect_uri.trim()) {
+      showError('Client ID, Client Secret, and Redirect URI are required.');
+      return;
+    }
+
+    setSocialBusy(true);
+    try {
+      const response = await apiPost('/api/social-credentials/oauth/start', {
+        workspace_id: Number(socialForm.workspace_id),
+        channel_id: parseOptionalId(socialForm.channel_id),
+        platform: socialForm.platform,
+        client_id: socialForm.client_id.trim(),
+        client_secret: socialForm.client_secret.trim(),
+        redirect_uri: socialForm.redirect_uri.trim(),
+        login_hint: socialForm.login_hint.trim() || null,
+        scopes: socialForm.scopes
+          .split(' ')
+          .map((item) => item.trim())
+          .filter(Boolean)
+      });
+
+      setSocialForm((previous) => ({ ...previous, oauth_state: response.state }));
+      window.open(response.authorization_url, '_blank', 'noopener,noreferrer');
+      info('OAuth started. Complete consent in browser, then paste the returned code below.');
+      await loadSocialStatuses();
+    } catch {
+      showError('Unable to start OAuth. Verify credentials and workspace selection.');
+    } finally {
+      setSocialBusy(false);
+    }
+  };
+
+  const completeOAuthConnection = async () => {
+    if (!socialForm.workspace_id) {
+      showError('Select a workspace before completing OAuth.');
+      return;
+    }
+    if (!socialForm.oauth_code.trim()) {
+      showError('Paste the OAuth code before completing connection.');
+      return;
+    }
+
+    setSocialBusy(true);
+    try {
+      await apiPost('/api/social-credentials/oauth/callback', {
+        workspace_id: Number(socialForm.workspace_id),
+        channel_id: parseOptionalId(socialForm.channel_id),
+        platform: socialForm.platform,
+        code: socialForm.oauth_code.trim(),
+        state: socialForm.oauth_state.trim() || null,
+        account_hint: socialForm.account_hint.trim() || null
+      });
+
+      success(`${socialForm.platform} connected successfully.`);
+      setSocialForm((previous) => ({ ...previous, oauth_code: '' }));
+      await loadSocialStatuses();
+    } catch {
+      showError('OAuth completion failed. Verify code/state and try again.');
+    } finally {
+      setSocialBusy(false);
+    }
+  };
+
+  const disconnectSocial = async (platform, workspaceId, channelId) => {
+    setSocialBusy(true);
+    try {
+      const query = new URLSearchParams({
+        workspace_id: String(workspaceId),
+        ...(channelId ? { channel_id: String(channelId) } : {})
+      }).toString();
+
+      await apiDelete(`/api/social-credentials/${platform}?${query}`);
+      info(`${platform} credential disconnected.`);
+      await loadSocialStatuses();
+    } catch {
+      showError(`Failed to disconnect ${platform}.`);
+    } finally {
+      setSocialBusy(false);
     }
   };
 
@@ -602,6 +741,162 @@ const Home = () => {
             <button className="tiny-button" type="button" onClick={saveAuthSettings}>Save Auth</button>
             <button className="tiny-button" type="button" onClick={clearAuthSettings}>Clear Auth</button>
           </div>
+        </div>
+      </section>
+
+      <section className="feature-card reveal-up delay-2">
+        <h3>Social Connections (OAuth)</h3>
+        <p style={{ marginTop: '0.4rem' }}>Configure OAuth app credentials, open consent, then paste code to connect.</p>
+
+        <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+          <label>
+            Workspace
+            <select
+              className="form-input"
+              value={socialForm.workspace_id}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, workspace_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Select workspace</option>
+              {entities.workspaces.map((item) => <option key={item.id} value={item.id}>{item.name} (#{item.id})</option>)}
+            </select>
+          </label>
+          <label>
+            Channel (optional)
+            <select
+              className="form-input"
+              value={socialForm.channel_id}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, channel_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="">Workspace-level credential</option>
+              {socialChannelOptions.map((item) => <option key={item.id} value={item.id}>{item.name} (#{item.id})</option>)}
+            </select>
+          </label>
+          <label>
+            Platform
+            <select
+              className="form-input"
+              value={socialForm.platform}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, platform: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            >
+              <option value="youtube">youtube</option>
+            </select>
+          </label>
+          <label>
+            OAuth Client ID
+            <input
+              className="form-input"
+              value={socialForm.client_id}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, client_id: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            OAuth Client Secret
+            <input
+              className="form-input"
+              type="password"
+              value={socialForm.client_secret}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, client_secret: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            Redirect URI
+            <input
+              className="form-input"
+              value={socialForm.redirect_uri}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, redirect_uri: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            OAuth Scopes (space-separated)
+            <input
+              className="form-input"
+              value={socialForm.scopes}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, scopes: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            Login Hint (optional email)
+            <input
+              className="form-input"
+              value={socialForm.login_hint}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, login_hint: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            OAuth Code
+            <input
+              className="form-input"
+              value={socialForm.oauth_code}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, oauth_code: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+              placeholder="Paste code returned by provider"
+            />
+          </label>
+          <label>
+            OAuth State (optional override)
+            <input
+              className="form-input"
+              value={socialForm.oauth_state}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, oauth_state: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+          <label>
+            Account Hint (optional)
+            <input
+              className="form-input"
+              value={socialForm.account_hint}
+              onChange={(event) => setSocialForm((previous) => ({ ...previous, account_hint: event.target.value }))}
+              style={{ marginTop: '0.35rem' }}
+            />
+          </label>
+        </div>
+
+        <div className="table-toolbar" style={{ marginTop: '0.9rem' }}>
+          <div className="toolbar-group">
+            <button className="tiny-button" type="button" disabled={socialBusy} onClick={startOAuthConnection}>
+              {socialBusy ? 'Working...' : 'Start OAuth'}
+            </button>
+            <button className="tiny-button" type="button" disabled={socialBusy} onClick={completeOAuthConnection}>
+              {socialBusy ? 'Working...' : 'Complete OAuth'}
+            </button>
+          </div>
+        </div>
+
+        <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+          {socialStatuses.length === 0 ? (
+            <div>No social credentials connected yet.</div>
+          ) : (
+            socialStatuses.map((item) => (
+              <div key={`${item.platform}-${item.workspace_id}-${item.channel_id || 'workspace'}`}>
+                <strong>{item.platform}</strong>
+                {` | workspace #${item.workspace_id}`}
+                {item.channel_id ? ` | channel #${item.channel_id}` : ' | workspace-level'}
+                {` | ${item.is_connected ? 'connected' : 'pending'}`}
+                {item.account_hint ? ` | ${item.account_hint}` : ''}
+                {item.has_refresh_token ? ' | refresh token saved' : ''}
+                <button
+                  className="tiny-button"
+                  type="button"
+                  style={{ marginLeft: '0.7rem' }}
+                  disabled={socialBusy}
+                  onClick={() => disconnectSocial(item.platform, item.workspace_id, item.channel_id)}
+                >
+                  Disconnect
+                </button>
+              </div>
+            ))
+          )}
         </div>
       </section>
 

@@ -1,5 +1,5 @@
 # backend/models/database.py
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Float, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -25,6 +25,7 @@ class Workspace(Base):
     videos = relationship("Video", back_populates="workspace")
     publish_logs = relationship("PublishLog", back_populates="workspace")
     metrics = relationship("Metrics", back_populates="workspace")
+    social_credentials = relationship("SocialCredential", back_populates="workspace")
 
 class Avatar(Base):
     __tablename__ = 'avatars'
@@ -69,6 +70,7 @@ class Channel(Base):
     videos = relationship("Video", back_populates="channel")
     publish_logs = relationship("PublishLog", back_populates="channel")
     metrics = relationship("Metrics", back_populates="channel")
+    social_credentials = relationship("SocialCredential", back_populates="channel")
 
 class Music(Base):
     __tablename__ = 'music'
@@ -213,3 +215,27 @@ class Metrics(Base):
     workspace = relationship("Workspace", back_populates="metrics")
     channel = relationship("Channel", back_populates="metrics")
     video = relationship("Video", back_populates="metrics")
+
+
+class SocialCredential(Base):
+    __tablename__ = 'social_credentials'
+    __table_args__ = (
+        UniqueConstraint('workspace_id', 'channel_id', 'platform', name='uq_social_credentials_scope_platform'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey('workspaces.id'), nullable=False)
+    channel_id = Column(Integer, ForeignKey('channels.id'), nullable=True)
+    platform = Column(String, nullable=False)  # e.g., 'youtube', 'tiktok', 'instagram', 'x'
+    provider_account_hint = Column(String)
+    encryption_version = Column(String, default='fernet-v1')
+    oauth_state = Column(String)
+    encrypted_payload = Column(Text, nullable=False)
+    scopes = Column(String)  # Space-separated scopes
+    is_connected = Column(Boolean, default=False)
+    connected_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    workspace = relationship("Workspace", back_populates="social_credentials")
+    channel = relationship("Channel", back_populates="social_credentials")

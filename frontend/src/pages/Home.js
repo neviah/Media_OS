@@ -21,6 +21,11 @@ const Home = () => {
   const [setupBusy, setSetupBusy] = React.useState(false);
   const [socialBusy, setSocialBusy] = React.useState(false);
   const [socialStatuses, setSocialStatuses] = React.useState([]);
+  const [tokenLifecycle, setTokenLifecycle] = React.useState(null);
+  const [tokenLifecycleBusy, setTokenLifecycleBusy] = React.useState(false);
+  const [publishPreflight, setPublishPreflight] = React.useState(null);
+  const [preflightBusy, setPreflightBusy] = React.useState(false);
+  const [publishJob, setPublishJob] = React.useState(null);
 
   const [authForm, setAuthForm] = React.useState({
     apiKey: window.localStorage.getItem('mediaos_api_key') || '',
@@ -147,6 +152,15 @@ const Home = () => {
     }
   }, []);
 
+  const loadTokenLifecycleStatus = React.useCallback(async () => {
+    try {
+      const data = await apiGet('/api/system/token-lifecycle-status');
+      setTokenLifecycle(data);
+    } catch {
+      setTokenLifecycle(null);
+    }
+  }, []);
+
   const loadDashboardState = React.useCallback(async () => {
     const endpointMap = {
       workspaces: '/api/workspaces/',
@@ -198,11 +212,11 @@ const Home = () => {
         channel_id: previous.channel_id || (channels[0] ? String(channels[0].id) : '')
       }));
 
-      await loadSocialStatuses();
+      await Promise.all([loadSocialStatuses(), loadTokenLifecycleStatus()]);
     } catch {
       setApiReady(false);
     }
-  }, [loadSocialStatuses]);
+  }, [loadSocialStatuses, loadTokenLifecycleStatus]);
 
   React.useEffect(() => {
     loadDashboardState();
@@ -320,15 +334,112 @@ const Home = () => {
   };
 
   const runPublish = () => {
+    void runPublishAsync();
+  };
+
+  const runPublishPreflight = async () => {
+    if (!pipelineReady.publish) {
+      showError('Select a video and platform before running publish preflight.');
+      return null;
+    }
+
+    setPreflightBusy(true);
+    try {
+      const response = await apiGet(`/api/system/publish-preflight?video_id=${Number(pipelineForm.video_id)}&platform=${encodeURIComponent(pipelineForm.platform)}`);
+      setPublishPreflight(response);
+      if (response.ok) {
+        success('Publish preflight passed.');
+      } else {
+        showError('Publish preflight failed. Review checks before publishing.');
+      }
+      return response;
+    } catch {
+      showError('Publish preflight failed to run.');
+      return null;
+    } finally {
+      setPreflightBusy(false);
+    }
+  };
+
+  const runPublishAsync = async () => {
     if (!pipelineReady.publish) {
       showError('Select a video and platform before running Publish.');
       return;
     }
-    runPipelineStep('Publish', '/api/pipelines/publish', {
-      video_id: Number(pipelineForm.video_id),
-      platform: pipelineForm.platform
-    });
+
+    const preflightResult = await runPublishPreflight();
+    if (!preflightResult || !preflightResult.ok) {
+      return;
+    }
+
+    setBusyStep('Publish (queued)');
+    try {
+      const response = await apiPost('/api/pipelines/publish-async', {
+        video_id: Number(pipelineForm.video_id),
+        platform: pipelineForm.platform,
+        idempotency_key: `publish:${pipelineForm.video_id}:${pipelineForm.platform}`,
+        max_attempts: 3
+      });
+      setPublishJob({
+        id: response.job_id,
+        status: response.status,
+        progress: 0,
+        detail: 'queued'
+      });
+      info(`Publish queued as job ${response.job_id}.`);
+    } catch {
+      showError('Failed to queue publish job.');
+    } finally {
+      setBusyStep('');
+    }
   };
+
+  const runTokenRefreshNow = async () => {
+    setTokenLifecycleBusy(true);
+    try {
+      const response = await apiPost('/api/system/token-refresh-now', {});
+      if (response.success) {
+        success(`Token refresh cycle complete. Refreshed ${response.summary.refreshed} credentials.`);
+      }
+      await loadTokenLifecycleStatus();
+      await loadSocialStatuses();
+    } catch {
+      showError('Failed to run token refresh cycle.');
+    } finally {
+      setTokenLifecycleBusy(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!publishJob?.id) {
+      return undefined;
+    }
+
+    if (publishJob.status === 'succeeded' || publishJob.status === 'failed') {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(async () => {
+      try {
+        const response = await apiGet(`/api/pipelines/publish-jobs/${publishJob.id}`);
+        if (!response.success || !response.job) {
+          return;
+        }
+
+        setPublishJob(response.job);
+        if (response.job.status === 'succeeded') {
+          success('Publish job completed successfully.');
+          await loadDashboardState();
+        } else if (response.job.status === 'failed') {
+          showError(response.job.error || 'Publish job failed.');
+        }
+      } catch {
+        // Best-effort polling; keep existing job state.
+      }
+    }, 2500);
+
+    return () => window.clearInterval(intervalId);
+  }, [publishJob, loadDashboardState, success, showError]);
 
   const saveAuthSettings = () => {
     window.localStorage.setItem('mediaos_api_key', authForm.apiKey.trim());
@@ -940,6 +1051,31 @@ const Home = () => {
       </section>
 
       <section className="feature-card reveal-up delay-2">
+        <h3>Token Lifecycle</h3>
+        <p style={{ marginTop: '0.4rem' }}>Background refresh keeps provider tokens healthy and warns near expiry.</p>
+
+        {tokenLifecycle ? (
+          <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+            <div>Scheduler: {tokenLifecycle.running ? 'running' : 'stopped'}</div>
+            <div>Last cycle: {tokenLifecycle.last_cycle_started_at || 'not yet'}</div>
+            <div>
+              Summary: checked {tokenLifecycle.last_cycle_summary?.checked ?? 0}, refreshed {tokenLifecycle.last_cycle_summary?.refreshed ?? 0}, warnings {tokenLifecycle.last_cycle_summary?.warnings ?? 0}, failed {tokenLifecycle.last_cycle_summary?.failed ?? 0}
+            </div>
+          </div>
+        ) : (
+          <p style={{ marginTop: '0.5rem' }}>Token lifecycle status unavailable.</p>
+        )}
+
+        <div className="table-toolbar" style={{ marginTop: '0.9rem' }}>
+          <div className="toolbar-group">
+            <button className="tiny-button" type="button" disabled={tokenLifecycleBusy} onClick={runTokenRefreshNow}>
+              {tokenLifecycleBusy ? 'Refreshing...' : 'Run Token Refresh Now'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="feature-card reveal-up delay-2">
         <h3>Run Pipeline Actions</h3>
         <p style={{ marginTop: '0.4rem' }}>Select existing records, then trigger each stage. Buttons stay disabled until required inputs exist.</p>
 
@@ -1049,9 +1185,33 @@ const Home = () => {
             <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.scriptToVoice} onClick={runScriptToVoice}>Run Script -&gt; Voice</button>
             <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.voiceToAvatar} onClick={runVoiceToAvatar}>Run Voice -&gt; Avatar</button>
             <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.assembly} onClick={runAssembly}>Run Assembly</button>
-            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || !pipelineReady.publish} onClick={runPublish}>Run Publish</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || preflightBusy || !pipelineReady.publish} onClick={runPublishPreflight}>Run Publish Preflight</button>
+            <button className="tiny-button" type="button" disabled={Boolean(busyStep) || preflightBusy || !pipelineReady.publish} onClick={runPublish}>Queue Publish Job</button>
           </div>
         </div>
+
+        {publishPreflight ? (
+          <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+            <div>Preflight: {publishPreflight.ok ? 'passed' : 'failed'}</div>
+            {Array.isArray(publishPreflight.checks)
+              ? publishPreflight.checks.map((check) => (
+                <div key={check.key}>{check.ok ? 'OK' : 'Fail'} - {check.key}: {check.detail}</div>
+              ))
+              : null}
+          </div>
+        ) : null}
+
+        {publishJob ? (
+          <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+            <div>Publish job: {publishJob.id}</div>
+            <div>Status: {publishJob.status}</div>
+            <div>Progress: {publishJob.progress}%</div>
+            <div>Attempt: {publishJob.attempt}/{publishJob.max_attempts}</div>
+            <div>Detail: {publishJob.detail}</div>
+            {publishJob.error ? <div>Error: {publishJob.error}</div> : null}
+            {publishJob.publish_log_id ? <div>Publish log ID: {publishJob.publish_log_id}</div> : null}
+          </div>
+        ) : null}
 
         {busyStep ? <p className="text-sm text-gray-500">Running: {busyStep}...</p> : null}
       </section>

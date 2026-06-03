@@ -8,6 +8,7 @@ import uvicorn
 from backend.api.main import api_router
 from backend.database import engine
 from backend.models.database import Base
+from backend.services.token_lifecycle_service import token_lifecycle_service
 
 app = FastAPI(title="Media Control Center API")
 
@@ -59,6 +60,12 @@ async def auth_middleware(request: Request, call_next):
 async def startup_event():
     # Ensure local SQLite tables exist for first-run development.
     Base.metadata.create_all(bind=engine)
+    token_lifecycle_service.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    token_lifecycle_service.stop()
 
 
 app.include_router(api_router, prefix="/api")

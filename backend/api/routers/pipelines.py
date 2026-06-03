@@ -3,6 +3,8 @@ from typing import List, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from backend.services.publish_job_service import publish_job_service
+
 router = APIRouter()
 
 
@@ -62,6 +64,14 @@ class PublishRequest(BaseModel):
     schedule_time: Optional[float] = None
 
 
+class PublishAsyncRequest(BaseModel):
+    video_id: int
+    platform: str
+    schedule_time: Optional[float] = None
+    idempotency_key: Optional[str] = None
+    max_attempts: int = 3
+
+
 @router.post('/news-to-script')
 def trigger_news_to_script(payload: NewsToScriptRequest):
     pipeline = _get_news_to_script_pipeline_cls()()
@@ -117,3 +127,47 @@ def trigger_publish(payload: PublishRequest):
     if created is None:
         return {'success': False, 'detail': 'publish failed'}
     return {'success': True, 'publish_log_id': created.id, 'detail': 'publish flow complete'}
+
+
+@router.post('/publish-async')
+def trigger_publish_async(payload: PublishAsyncRequest):
+    job = publish_job_service.enqueue(
+        video_id=payload.video_id,
+        platform=payload.platform,
+        schedule_time=payload.schedule_time,
+        idempotency_key=payload.idempotency_key,
+        max_attempts=payload.max_attempts,
+    )
+    return {
+        'success': True,
+        'job_id': job.id,
+        'status': job.status,
+        'attempt': job.attempt,
+        'max_attempts': job.max_attempts,
+        'idempotency_key': job.idempotency_key,
+    }
+
+
+@router.get('/publish-jobs/{job_id}')
+def get_publish_job_status(job_id: str):
+    job = publish_job_service.get(job_id)
+    if job is None:
+        return {'success': False, 'detail': 'job not found'}
+
+    return {
+        'success': True,
+        'job': {
+            'id': job.id,
+            'video_id': job.video_id,
+            'platform': job.platform,
+            'status': job.status,
+            'attempt': job.attempt,
+            'max_attempts': job.max_attempts,
+            'progress': job.progress,
+            'detail': job.detail,
+            'publish_log_id': job.publish_log_id,
+            'error': job.error,
+            'created_at': job.created_at,
+            'updated_at': job.updated_at,
+        },
+    }

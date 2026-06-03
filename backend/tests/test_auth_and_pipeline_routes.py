@@ -15,6 +15,15 @@ class DummyPublishingPipeline:
         return SimpleNamespace(id=202)
 
 
+class DummyJob:
+    def __init__(self):
+        self.id = 'job-123'
+        self.status = 'queued'
+        self.attempt = 0
+        self.max_attempts = 3
+        self.idempotency_key = 'idem-123'
+
+
 def _load_app_with_env(auth_enabled: str, api_key: str):
     os.environ['MEDIAOS_AUTH_ENABLED'] = auth_enabled
     os.environ['MEDIAOS_API_KEY'] = api_key
@@ -100,3 +109,33 @@ def test_pipeline_publish_requires_admin(monkeypatch):
     assert admin_response.status_code == 200
     assert admin_response.json()['success'] is True
     assert admin_response.json()['publish_log_id'] == 202
+
+
+def test_pipeline_publish_async_requires_admin(monkeypatch):
+    app = _load_app_with_env(auth_enabled='1', api_key='secret')
+
+    import backend.api.routers.pipelines as pipeline_router
+
+    monkeypatch.setattr(pipeline_router.publish_job_service, 'enqueue', lambda **kwargs: DummyJob())
+
+    client = TestClient(app)
+
+    editor_headers = {'x-api-key': 'secret', 'x-user-role': 'editor'}
+    editor_response = client.post(
+        '/api/pipelines/publish-async',
+        json={'video_id': 1, 'platform': 'youtube', 'schedule_time': None, 'idempotency_key': 'idem-123', 'max_attempts': 3},
+        headers=editor_headers,
+    )
+    assert editor_response.status_code == 403
+    assert editor_response.json()['detail'] == 'Admin role required'
+
+    admin_headers = {'x-api-key': 'secret', 'x-user-role': 'admin'}
+    admin_response = client.post(
+        '/api/pipelines/publish-async',
+        json={'video_id': 1, 'platform': 'youtube', 'schedule_time': None, 'idempotency_key': 'idem-123', 'max_attempts': 3},
+        headers=admin_headers,
+    )
+    assert admin_response.status_code == 200
+    body = admin_response.json()
+    assert body['success'] is True
+    assert body['job_id'] == 'job-123'

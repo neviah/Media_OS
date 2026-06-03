@@ -274,7 +274,7 @@ const Home = () => {
     info('API auth settings cleared.');
   };
 
-  const runGuidedSetup = async () => {
+  const runGuidedSetup = async ({ idempotent = false } = {}) => {
     const workspaceName = setupForm.workspace_name.trim();
     const avatarName = setupForm.avatar_name.trim();
     const channelName = setupForm.channel_name.trim();
@@ -294,44 +294,85 @@ const Home = () => {
     try {
       let workspaceId = Number(setupForm.existing_workspace_id);
       if (!workspaceId) {
-        const workspace = await apiPost('/api/workspaces/', {
-          name: workspaceName,
-          description: setupForm.workspace_description.trim() || null
-        });
-        workspaceId = workspace.id;
+        if (idempotent) {
+          const existingWorkspace = entities.workspaces.find(
+            (item) => item.name.trim().toLowerCase() === workspaceName.toLowerCase()
+          );
+          if (existingWorkspace) {
+            workspaceId = existingWorkspace.id;
+          }
+        }
+
+        if (!workspaceId) {
+          const workspace = await apiPost('/api/workspaces/', {
+            name: workspaceName,
+            description: setupForm.workspace_description.trim() || null
+          });
+          workspaceId = workspace.id;
+        }
       }
 
-      const avatar = await apiPost('/api/avatars/', {
-        workspace_id: workspaceId,
-        name: avatarName,
-        style_hints: setupForm.avatar_style_hints.trim() || null,
-        channel_type: 'news',
-        base_portrait_path: null,
-        reference_sheet_path: null,
-        voice_profile_id: null
-      });
+      let avatar = null;
+      if (idempotent) {
+        const avatars = await apiGet('/api/avatars/');
+        avatar = avatars.find(
+          (item) => Number(item.workspace_id) === workspaceId && item.name.trim().toLowerCase() === avatarName.toLowerCase()
+        ) || null;
+      }
 
-      const channel = await apiPost('/api/channels/', {
-        workspace_id: workspaceId,
-        avatar_id: avatar.id,
-        name: channelName,
-        script_style_preset: setupForm.script_style_preset,
-        music_policy: 'approved_only',
-        social_platform_credentials: null,
-        posting_schedule: null,
-        branding_colors: null,
-        intro_outro_paths: null,
-        is_active: true
-      });
+      if (!avatar) {
+        avatar = await apiPost('/api/avatars/', {
+          workspace_id: workspaceId,
+          name: avatarName,
+          style_hints: setupForm.avatar_style_hints.trim() || null,
+          channel_type: 'news',
+          base_portrait_path: null,
+          reference_sheet_path: null,
+          voice_profile_id: null
+        });
+      }
 
-      const source = await apiPost('/api/news-sources/', {
-        workspace_id: workspaceId,
-        name: sourceName,
-        source_url: sourceUrl,
-        keywords: setupForm.news_keywords.trim() || null,
-        pull_interval: 60,
-        is_active: true
-      });
+      let channel = null;
+      if (idempotent) {
+        const channels = await apiGet('/api/channels/');
+        channel = channels.find(
+          (item) => Number(item.workspace_id) === workspaceId && item.name.trim().toLowerCase() === channelName.toLowerCase()
+        ) || null;
+      }
+
+      if (!channel) {
+        channel = await apiPost('/api/channels/', {
+          workspace_id: workspaceId,
+          avatar_id: avatar.id,
+          name: channelName,
+          script_style_preset: setupForm.script_style_preset,
+          music_policy: 'approved_only',
+          social_platform_credentials: null,
+          posting_schedule: null,
+          branding_colors: null,
+          intro_outro_paths: null,
+          is_active: true
+        });
+      }
+
+      let source = null;
+      if (idempotent) {
+        const sources = await apiGet('/api/news-sources/');
+        source = sources.find(
+          (item) => Number(item.workspace_id) === workspaceId && item.name.trim().toLowerCase() === sourceName.toLowerCase()
+        ) || null;
+      }
+
+      if (!source) {
+        source = await apiPost('/api/news-sources/', {
+          workspace_id: workspaceId,
+          name: sourceName,
+          source_url: sourceUrl,
+          keywords: setupForm.news_keywords.trim() || null,
+          pull_interval: 60,
+          is_active: true
+        });
+      }
 
       await loadDashboardState();
 
@@ -510,6 +551,15 @@ const Home = () => {
           <div className="toolbar-group">
             <button className="tiny-button" type="button" disabled={setupBusy} onClick={runGuidedSetup}>
               {setupBusy ? 'Running Setup...' : 'Run Guided Setup'}
+            </button>
+            <button
+              className="tiny-button"
+              type="button"
+              disabled={setupBusy}
+              onClick={() => runGuidedSetup({ idempotent: true })}
+              title="Reuse existing named workspace/avatar/channel/source when available"
+            >
+              {setupBusy ? 'Running Setup...' : 'Run Defaults (Idempotent)'}
             </button>
           </div>
         </div>

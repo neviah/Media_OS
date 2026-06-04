@@ -63,6 +63,22 @@ class PublishingService:
             "timestamp": _utcnow().isoformat(),
         }
 
+    @staticmethod
+    def _http_error_to_code(platform: str, status_code: int) -> str:
+        if status_code == 400:
+            return f"{platform}_bad_request"
+        if status_code in {401, 403}:
+            return f"{platform}_auth_error"
+        if status_code == 404:
+            return f"{platform}_not_found"
+        if status_code == 409:
+            return f"{platform}_conflict"
+        if status_code == 429:
+            return f"{platform}_rate_limited"
+        if 500 <= status_code <= 599:
+            return f"{platform}_provider_unavailable"
+        return f"{platform}_provider_http_error"
+
     def _load_platform_credential(self, workspace_id: int, channel_id: int, platform: str) -> Optional[SocialCredential]:
         db = SessionLocal()
         try:
@@ -239,7 +255,12 @@ class PublishingService:
             video_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else None
             return self._standard_response(platform="youtube", success=True, video_url=video_url, provider_response=provider_payload)
         except httpx.HTTPStatusError as exc:
-            return self._standard_response(platform="youtube", success=False, error_code="provider_http_error", error=f"YouTube API returned {exc.response.status_code}: {exc.response.text[:300]}")
+            return self._standard_response(
+                platform="youtube",
+                success=False,
+                error_code=self._http_error_to_code("youtube", exc.response.status_code),
+                error=f"YouTube API returned {exc.response.status_code}: {exc.response.text[:300]}",
+            )
         except Exception as exc:
             return self._standard_response(platform="youtube", success=False, error_code="provider_error", error=str(exc))
 
@@ -298,6 +319,21 @@ class PublishingService:
                 upload_response = httpx.put(upload_url, content=stream.read(), timeout=240)
             upload_response.raise_for_status()
 
+            verification_payload = {}
+            verification_ok = False
+            if publish_id:
+                verify_response = httpx.post(
+                    "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                    json={"publish_id": publish_id},
+                    timeout=20,
+                )
+                if verify_response.status_code < 400:
+                    verification_payload = verify_response.json()
+                    verify_data = verification_payload.get("data", {}) if isinstance(verification_payload, dict) else {}
+                    verify_status = (verify_data.get("status") or verify_data.get("state") or "").lower()
+                    verification_ok = verify_status in {"published", "success", "processing", "sent_for_review"}
+
             post_url = f"https://www.tiktok.com/upload?publish_id={publish_id}" if publish_id else None
             return self._standard_response(
                 platform="tiktok",
@@ -306,10 +342,17 @@ class PublishingService:
                 provider_response={
                     "init": init_payload,
                     "upload_status": upload_response.status_code,
+                    "verification": verification_payload,
+                    "verification_ok": verification_ok,
                 },
             )
         except httpx.HTTPStatusError as exc:
-            return self._standard_response(platform="tiktok", success=False, error_code="provider_http_error", error=f"TikTok API returned {exc.response.status_code}: {exc.response.text[:300]}")
+            return self._standard_response(
+                platform="tiktok",
+                success=False,
+                error_code=self._http_error_to_code("tiktok", exc.response.status_code),
+                error=f"TikTok API returned {exc.response.status_code}: {exc.response.text[:300]}",
+            )
         except Exception as exc:
             return self._standard_response(platform="tiktok", success=False, error_code="provider_error", error=str(exc))
 
@@ -368,16 +411,36 @@ class PublishingService:
             publish_response.raise_for_status()
             publish_payload = publish_response.json()
             media_id = publish_payload.get("id")
+
+            verification_payload = {}
             media_url = f"https://www.instagram.com/reel/{media_id}/" if media_id else None
+            if media_id:
+                verify_response = httpx.get(
+                    f"https://graph.facebook.com/v20.0/{media_id}",
+                    params={"fields": "id,permalink,status_code", "access_token": access_token},
+                    timeout=20,
+                )
+                if verify_response.status_code < 400:
+                    verification_payload = verify_response.json()
+                    media_url = verification_payload.get("permalink") or media_url
 
             return self._standard_response(
                 platform="instagram",
                 success=True,
                 video_url=media_url,
-                provider_response={"create": creation_payload, "publish": publish_payload},
+                provider_response={
+                    "create": creation_payload,
+                    "publish": publish_payload,
+                    "verification": verification_payload,
+                },
             )
         except httpx.HTTPStatusError as exc:
-            return self._standard_response(platform="instagram", success=False, error_code="provider_http_error", error=f"Instagram API returned {exc.response.status_code}: {exc.response.text[:300]}")
+            return self._standard_response(
+                platform="instagram",
+                success=False,
+                error_code=self._http_error_to_code("instagram", exc.response.status_code),
+                error=f"Instagram API returned {exc.response.status_code}: {exc.response.text[:300]}",
+            )
         except Exception as exc:
             return self._standard_response(platform="instagram", success=False, error_code="provider_error", error=str(exc))
 
@@ -453,9 +516,34 @@ class PublishingService:
             tweet_id = tweet_payload.get("data", {}).get("id")
             tweet_url = f"https://x.com/i/web/status/{tweet_id}" if tweet_id else None
 
-            return self._standard_response(platform="x", success=True, video_url=tweet_url, provider_response={"tweet": tweet_payload, "media_id": media_id})
+            verification_payload = {}
+            if tweet_id:
+                verify_response = httpx.get(
+                    f"https://api.twitter.com/2/tweets/{tweet_id}",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"tweet.fields": "created_at,public_metrics,text"},
+                    timeout=20,
+                )
+                if verify_response.status_code < 400:
+                    verification_payload = verify_response.json()
+
+            return self._standard_response(
+                platform="x",
+                success=True,
+                video_url=tweet_url,
+                provider_response={
+                    "tweet": tweet_payload,
+                    "media_id": media_id,
+                    "verification": verification_payload,
+                },
+            )
         except httpx.HTTPStatusError as exc:
-            return self._standard_response(platform="x", success=False, error_code="provider_http_error", error=f"X API returned {exc.response.status_code}: {exc.response.text[:300]}")
+            return self._standard_response(
+                platform="x",
+                success=False,
+                error_code=self._http_error_to_code("x", exc.response.status_code),
+                error=f"X API returned {exc.response.status_code}: {exc.response.text[:300]}",
+            )
         except Exception as exc:
             return self._standard_response(platform="x", success=False, error_code="provider_error", error=str(exc))
 

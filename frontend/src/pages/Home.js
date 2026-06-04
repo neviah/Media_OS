@@ -1149,7 +1149,9 @@ const Home = () => {
 
         {publishQueueStatus ? (
           <div className="stage-list" style={{ marginTop: '0.8rem' }}>
+            <div>Backend: {publishQueueStatus.backend || 'db'}</div>
             <div>Worker: {publishQueueStatus.running ? 'running' : 'stopped'}{publishQueueStatus.worker_thread_alive ? ' (thread alive)' : ''}</div>
+            <div>Redis queue: {publishQueueStatus.redis_queue_available ? `available (${publishQueueStatus.redis_queue_count ?? 0} waiting)` : 'not available'}</div>
             <div>Last cycle: {publishQueueStatus.last_cycle_started_at || 'not yet'}</div>
             <div>
               Queue counts: queued {publishQueueStatus.counts?.queued ?? 0}, running {publishQueueStatus.counts?.running ?? 0}, retrying {publishQueueStatus.counts?.retrying ?? 0}, succeeded {publishQueueStatus.counts?.succeeded ?? 0}, failed {publishQueueStatus.counts?.failed ?? 0}

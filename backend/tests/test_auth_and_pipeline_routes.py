@@ -1,5 +1,6 @@
 import importlib
 import os
+import uuid
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -123,7 +124,7 @@ def test_pipeline_publish_async_requires_admin(monkeypatch):
     with TestClient(app) as client:
         db = SessionLocal()
         try:
-            workspace = Workspace(name='Async Publish Workspace', description='test')
+            workspace = Workspace(name=f'Async Publish Workspace {uuid.uuid4().hex[:8]}', description='test')
             db.add(workspace)
             db.flush()
 

@@ -110,6 +110,8 @@ PyYAML==6.0.1
 referencing==0.37.0
 regex==2026.5.9
 requests==2.34.2
+redis==5.3.0
+rq==1.16.2
 resampy==0.4.3
 rich==13.7.1
 rpds-py==0.30.0

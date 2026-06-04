@@ -11,6 +11,13 @@ from typing import Dict, Optional
 from backend.database import SessionLocal
 from backend.models.database import PublishJob as PublishJobRecord
 
+try:
+    import redis
+    from rq import Queue
+except ImportError:  # pragma: no cover - optional runtime backend
+    redis = None
+    Queue = None
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -43,6 +50,18 @@ class PublishJobService:
         self._worker_thread: Optional[threading.Thread] = None
         self._last_cycle_started_at: Optional[str] = None
         self._last_cycle_summary: Dict[str, int] = {"queued": 0, "running": 0, "retrying": 0, "succeeded": 0, "failed": 0}
+        self._backend = __import__('os').getenv('MEDIAOS_PUBLISH_QUEUE_BACKEND', 'db').strip().lower()
+        self._redis_conn = None
+        self._rq_queue = None
+        if self._backend == 'redis' and redis is not None and Queue is not None:
+            redis_url = __import__('os').getenv('REDIS_URL', 'redis://localhost:6379')
+            queue_name = __import__('os').getenv('MEDIAOS_PUBLISH_QUEUE_NAME', 'mediaos-publish')
+            try:
+                self._redis_conn = redis.from_url(redis_url)
+                self._redis_conn.ping()
+                self._rq_queue = Queue(queue_name, connection=self._redis_conn)
+            except Exception:
+                self._backend = 'db'
 
     def _snapshot_from_record(self, record: PublishJobRecord) -> PublishJobSnapshot:
         return PublishJobSnapshot(
@@ -112,6 +131,20 @@ class PublishJobService:
             db.add(record)
             db.commit()
             db.refresh(record)
+
+            if self._backend == 'redis' and self._rq_queue is not None:
+                try:
+                    self._rq_queue.enqueue(
+                        'backend.services.publish_job_service.process_publish_job_record',
+                        record.id,
+                        job_timeout='20m',
+                        result_ttl=86400,
+                        failure_ttl=86400,
+                    )
+                except Exception:
+                    # Keep DB record queued; local worker or external worker can still process it.
+                    pass
+
             return self._snapshot_from_record(record)
         finally:
             db.close()
@@ -283,6 +316,12 @@ class PublishJobService:
         enabled = __import__('os').getenv('MEDIAOS_PUBLISH_QUEUE_ENABLED', '1') == '1'
         if not enabled:
             return
+
+        if self._backend == 'redis':
+            # In redis backend mode, processing is delegated to external RQ workers.
+            self._running = True
+            return
+
         self._running = True
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker_thread.start()
@@ -293,9 +332,19 @@ class PublishJobService:
     def status(self) -> Dict[str, object]:
         db = self._get_db()
         try:
+            redis_queue_count = None
+            if self._rq_queue is not None:
+                try:
+                    redis_queue_count = self._rq_queue.count
+                except Exception:
+                    redis_queue_count = None
+
             return {
+                'backend': self._backend,
                 'running': self._running,
                 'worker_thread_alive': bool(self._worker_thread and self._worker_thread.is_alive()),
+                'redis_queue_available': bool(self._rq_queue is not None),
+                'redis_queue_count': redis_queue_count,
                 'last_cycle_started_at': self._last_cycle_started_at,
                 'last_cycle_summary': self._last_cycle_summary,
                 'counts': {
@@ -311,3 +360,8 @@ class PublishJobService:
 
 
 publish_job_service = PublishJobService()
+
+
+def process_publish_job_record(record_id: str) -> None:
+    """Entry point for Redis/RQ workers to process a single DB-backed publish job."""
+    publish_job_service._process_record(record_id)

@@ -172,13 +172,19 @@ class PublishJobService:
 
     def _recover_stale_jobs(self, db) -> None:
         stale_seconds = int(__import__('os').getenv('MEDIAOS_PUBLISH_JOB_STALE_SECONDS', '600'))
-        cutoff = _utcnow() - timedelta(seconds=stale_seconds)
+        cutoff_ts = (_utcnow() - timedelta(seconds=stale_seconds)).timestamp()
         stale_jobs = db.query(PublishJobRecord).filter(
             PublishJobRecord.status.in_(['running', 'retrying'])
         ).all()
         for record in stale_jobs:
-            if record.updated_at and record.updated_at >= cutoff:
-                continue
+            if record.updated_at:
+                updated_ts = (
+                    record.updated_at.timestamp()
+                    if record.updated_at.tzinfo is not None
+                    else record.updated_at.replace(tzinfo=UTC).timestamp()
+                )
+                if updated_ts >= cutoff_ts:
+                    continue
             record.status = 'queued'
             record.progress = min(record.progress or 0, 10)
             record.detail = 'recovered after restart'
